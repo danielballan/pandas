@@ -40,9 +40,10 @@ cdef inline int int_max(int a, int b): return a if a >= b else b
 cdef inline int int_min(int a, int b): return a if a <= b else b
 
 
-cdef extern from "math.h":
+cdef extern from "src/headers/math.h":
     double sqrt(double x)
     double fabs(double)
+    int signbit(double)
 
 from . import lib
 
@@ -948,12 +949,12 @@ def roll_sum(ndarray[double_t] input, int win, int minp):
 
 def roll_mean(ndarray[double_t] input,
                int win, int minp):
-    cdef double val, prev, sum_x = 0
-    cdef Py_ssize_t nobs = 0, i
-    cdef Py_ssize_t N = len(input)
+    cdef:
+        double val, prev, result, sum_x = 0
+        Py_ssize_t nobs = 0, i, neg_ct = 0
+        Py_ssize_t N = len(input)
 
     cdef ndarray[double_t] output = np.empty(N, dtype=float)
-
     minp = _check_minp(win, minp, N)
 
     for i from 0 <= i < minp - 1:
@@ -963,6 +964,8 @@ def roll_mean(ndarray[double_t] input,
         if val == val:
             nobs += 1
             sum_x += val
+            if signbit(val):
+                neg_ct += 1
 
         output[i] = NaN
 
@@ -972,15 +975,27 @@ def roll_mean(ndarray[double_t] input,
         if val == val:
             nobs += 1
             sum_x += val
+            if signbit(val):
+                neg_ct += 1
 
         if i > win - 1:
             prev = input[i - win]
             if prev == prev:
                 sum_x -= prev
                 nobs -= 1
+                if signbit(prev):
+                    neg_ct -= 1
 
         if nobs >= minp:
-            output[i] = sum_x / nobs
+            result = sum_x / nobs
+            if neg_ct == 0 and result < 0:
+                # all positive
+                output[i] = 0
+            elif neg_ct == nobs and result > 0:
+                # all negative
+                output[i] = 0
+            else:
+                output[i] = result
         else:
             output[i] = NaN
 
@@ -1701,6 +1716,73 @@ def roll_generic(ndarray[float64_t, cast=True] input, int win,
             output[i] = NaN
 
     bufarr.data = <char*> oldbuf
+
+    return output
+
+
+def roll_window(ndarray[float64_t, ndim=1, cast=True] input,
+                ndarray[float64_t, ndim=1, cast=True] weights,
+                int minp, bint avg=True, bint avg_wgt=False):
+    """
+    Assume len(weights) << len(input)
+    """
+    cdef:
+        ndarray[double_t] output, tot_wgt, counts
+        Py_ssize_t in_i, win_i, win_n, win_k, in_n, in_k
+        float64_t val_in, val_win, c, w
+
+    in_n = len(input)
+    win_n = len(weights)
+    output = np.zeros(in_n, dtype=float)
+    counts = np.zeros(in_n, dtype=float)
+    if avg:
+        tot_wgt = np.zeros(in_n, dtype=float)
+
+    minp = _check_minp(len(weights), minp, in_n)
+
+    if avg_wgt:
+        for win_i from 0 <= win_i < win_n:
+            val_win = weights[win_i]
+            if val_win != val_win:
+                continue
+
+            for in_i from 0 <= in_i < in_n - (win_n - win_i) + 1:
+                val_in = input[in_i]
+                if val_in == val_in:
+                    output[in_i + (win_n - win_i) - 1] += val_in * val_win
+                    counts[in_i + (win_n - win_i) - 1] += 1
+                    tot_wgt[in_i + (win_n - win_i) - 1] += val_win
+
+        for in_i from 0 <= in_i < in_n:
+            c = counts[in_i]
+            if c < minp:
+                output[in_i] = NaN
+            else:
+                w = tot_wgt[in_i]
+                if w == 0:
+                    output[in_i] = NaN
+                else:
+                    output[in_i] /= tot_wgt[in_i]
+
+    else:
+        for win_i from 0 <= win_i < win_n:
+            val_win = weights[win_i]
+            if val_win != val_win:
+                continue
+
+            for in_i from 0 <= in_i < in_n - (win_n - win_i) + 1:
+                val_in = input[in_i]
+
+                if val_in == val_in:
+                    output[in_i + (win_n - win_i) - 1] += val_in * val_win
+                    counts[in_i + (win_n - win_i) - 1] += 1
+
+        for in_i from 0 <= in_i < in_n:
+            c = counts[in_i]
+            if c < minp:
+                output[in_i] = NaN
+            elif avg:
+                output[in_i] /= c
 
     return output
 

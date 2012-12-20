@@ -10,21 +10,22 @@ import time
 import re
 import copy
 import itertools
+import warnings
 
 import numpy as np
 from pandas import (
-    Series, TimeSeries, DataFrame, Panel, Index, MultiIndex, Int64Index
+    Series, TimeSeries, DataFrame, Panel, Panel4D, Index, MultiIndex, Int64Index
 )
 from pandas.sparse.api import SparseSeries, SparseDataFrame, SparsePanel
 from pandas.sparse.array import BlockIndex, IntIndex
 from pandas.tseries.api import PeriodIndex, DatetimeIndex
 from pandas.core.common import adjoin
-from pandas.core.algorithms import match, unique
-
-from pandas.core.categorical import Factor
+from pandas.core.algorithms import match, unique, factorize
+from pandas.core.strings import str_len
+from pandas.core.categorical import Categorical
 from pandas.core.common import _asarray_tuplesafe, _try_sort
 from pandas.core.internals import BlockManager, make_block, form_blocks
-from pandas.core.reshape import block2d_to_block3d
+from pandas.core.reshape import block2d_to_block3d, block2d_to_blocknd, factor_indexer
 import pandas.core.common as com
 from pandas.tools.merge import concat
 
@@ -34,6 +35,11 @@ import pandas.tslib as tslib
 
 from contextlib import contextmanager
 
+# versioning attribute
+_version = '0.10'
+
+class IncompatibilityWarning(Warning): pass
+
 # reading and writing the full object in one go
 _TYPE_MAP = {
     Series: 'series',
@@ -42,6 +48,7 @@ _TYPE_MAP = {
     DataFrame: 'frame',
     SparseDataFrame: 'sparse_frame',
     Panel: 'wide',
+    Panel4D : 'ndim',
     SparsePanel: 'sparse_panel'
 }
 
@@ -84,9 +91,12 @@ def _tables():
         _table_mod = tables
 
         # version requirements
-        major, minor, subv = tables.__version__.split('.')
-        if int(major) >= 2 and int(minor[0]) >= 3:
-            _table_supports_index = True
+        ver = tables.__version__.split('.')
+        try:
+            if int(ver[0]) >= 2 and int(ver[1][0]) >= 3:
+                _table_supports_index = True
+        except:
+            pass
 
     return _table_mod
 
@@ -326,7 +336,7 @@ class HDFStore(object):
             raise KeyError('No object named %s in the file' % key)
         return self._read_group(group)
 
-    def select(self, key, where=None):
+    def select(self, key, where=None, **kwargs):
         """
         Retrieve pandas object stored in file, optionally based on where
         criteria
@@ -340,9 +350,7 @@ class HDFStore(object):
         group = self.get_node(key)
         if group is None:
             raise KeyError('No object named %s in the file' % key)
-        if where is not None and not _is_table_type(group):
-            raise Exception('can only select with where on objects written as tables')
-        return self._read_group(group, where)
+        return self._read_group(group, where, **kwargs)
 
     def put(self, key, value, table=False, append=False,
             compression=None, **kwargs):
@@ -389,7 +397,7 @@ class HDFStore(object):
         if group is not None:
 
             # remove the node
-            if where is None or not len(where):
+            if where is None:
                 group = self.get_node(key)
                 group._f_remove(recursive=True)
             
@@ -432,8 +440,9 @@ class HDFStore(object):
         """
 
         # version requirements
+        _tables()
         if not _table_supports_index:
-            raise("PyTables >= 2.3 is required for table indexing")
+            raise Exception("PyTables >= 2.3 is required for table indexing")
 
         group = self.get_node(key)
         if group is None: return
@@ -497,6 +506,8 @@ class HDFStore(object):
 
         wrapper(value)
         group._v_attrs.pandas_type = kind
+        group._v_attrs.pandas_version = _version
+        #group._v_attrs.meta = getattr(value,'meta',None)
 
     def _write_series(self, group, series):
         self._write_index(group, 'index', series.index)
@@ -616,10 +627,6 @@ class HDFStore(object):
 
         return BlockManager(blocks, axes)
 
-    def _write_frame_table(self, group, df, append=False, comp=None, **kwargs):
-        t = create_table(self, group, typ = 'appendable_frame')
-        t.write(axes_to_index=[0], obj=df, append=append, compression=comp, **kwargs)
-
     def _write_wide(self, group, panel):
         panel._consolidate_inplace()
         self._write_block_manager(group, panel._data)
@@ -627,14 +634,33 @@ class HDFStore(object):
     def _read_wide(self, group, where=None):
         return Panel(self._read_block_manager(group))
 
-    def _write_wide_table(self, group, panel, append=False, comp=None, **kwargs):
-        t = create_table(self, group, typ = 'appendable_panel')
-        t.write(axes_to_index=[1,2], obj=panel,
+    def _write_ndim_table(self, group, obj, append=False, comp=None, axes=None, **kwargs):
+        if axes is None:
+            axes = [1,2,3]
+        t = create_table(self, group, typ = 'appendable_ndim')
+        t.write(axes=axes, obj=obj,
                 append=append, compression=comp, **kwargs)
 
-    def _read_wide_table(self, group, where=None):
-        t = create_table(self, group)
+    def _read_ndim_table(self, group, where=None, **kwargs):
+        t = create_table(self, group, **kwargs)
         return t.read(where)
+
+    def _write_frame_table(self, group, df, append=False, comp=None, axes=None, **kwargs):
+        if axes is None:
+            axes = [0]
+        t = create_table(self, group, typ = 'appendable_frame')
+        t.write(axes=axes, obj=df, append=append, compression=comp, **kwargs)
+
+    _read_frame_table = _read_ndim_table
+
+    def _write_wide_table(self, group, panel, append=False, comp=None, axes=None, **kwargs):
+        if axes is None:
+            axes = [1,2]
+        t = create_table(self, group, typ = 'appendable_panel')
+        t.write(axes=axes, obj=panel,
+                append=append, compression=comp, **kwargs)
+
+    _read_wide_table = _read_ndim_table
 
     def _write_index(self, group, key, index):
         if isinstance(index, MultiIndex):
@@ -817,11 +843,16 @@ class HDFStore(object):
 
         getattr(group, key)._v_attrs.transposed = transposed
 
-    def _read_group(self, group, where=None):
+    def _read_group(self, group, where=None, **kwargs):
         kind = group._v_attrs.pandas_type
         kind = _LEGACY_MAP.get(kind, kind)
         handler = self._get_handler(op='read', kind=kind)
-        return handler(group, where)
+        v = handler(group, where, **kwargs)
+        #if v is not None:
+        #    meta = getattr(group._v_attrs,'meta',None)
+        #    if meta is not None:
+        #        v.meta = meta
+        return v
 
     def _read_series(self, group, where=None):
         index = self._read_index(group, 'index')
@@ -850,38 +881,40 @@ class HDFStore(object):
         kind = node._v_attrs.kind
         return _unconvert_index_legacy(data, kind)
 
-    def _read_frame_table(self, group, where=None):
-        t = create_table(self, group)
-        return t.read(where)
-
-
-class Col(object):
-    """ a column description class
+class IndexCol(object):
+    """ an index column description class
 
         Parameters
         ----------
 
+        axis   : axis which I reference
         values : the ndarray like converted values
         kind   : a string description of this type
         typ    : the pytables type
+        pos    : the position in the pytables
 
         """
     is_indexable = True
 
-    def __init__(self, values = None, kind = None, typ = None, cname = None, itemsize = None, name = None, kind_attr = None, **kwargs):
+    def __init__(self, values = None, kind = None, typ = None, cname = None, itemsize = None, name = None, axis = None, kind_attr = None, pos = None, **kwargs):
         self.values = values
         self.kind   = kind
         self.typ    = typ
         self.itemsize = itemsize
-        self.name      = None
+        self.name      = name
         self.cname     = cname
-        self.kind_attr = None
+        self.kind_attr = kind_attr
+        self.axis      = axis
+        self.pos       = pos
         self.table  = None
 
         if name is not None:
             self.set_name(name, kind_attr)
+        if pos is not None:
+            self.set_pos(pos)
 
     def set_name(self, name, kind_attr = None):
+        """ set the name of this indexer """
         self.name      = name
         self.kind_attr = kind_attr or "%s_kind" % name
         if self.cname is None:
@@ -889,14 +922,31 @@ class Col(object):
 
         return self
 
+    def set_axis(self, axis):
+        """ set the axis over which I index """
+        self.axis      = axis
+
+        return self
+
+    def set_pos(self, pos):
+        """ set the position of this column in the Table """
+        self.pos       = pos
+        if pos is not None and self.typ is not None:
+            self.typ._v_pos = pos
+        return self
+
     def set_table(self, table):
         self.table = table
         return self
 
     def __repr__(self):
-        return "name->%s,cname->%s,kind->%s" % (self.name,self.cname,self.kind)
+        return "name->%s,cname->%s,axis->%s,pos->%s,kind->%s" % (self.name,self.cname,self.axis,self.pos,self.kind)
 
     __str__ = __repr__
+
+    def __eq__(self, other):
+        """ compare 2 col items """
+        return all([ getattr(self,a,None) == getattr(other,a,None) for a in ['name','cname','axis','pos'] ])
 
     def copy(self):
         new_self = copy.copy(self)
@@ -909,10 +959,10 @@ class Col(object):
         new_self.get_attr()
         return new_self
 
-    def convert(self, sel):
+    def convert(self, values):
         """ set the values from this selection """
-        self.values = _maybe_convert(sel.values[self.cname], self.kind)
-
+        self.values = Index(_maybe_convert(values[self.cname], self.kind))
+   
     @property
     def attrs(self):
         return self.table._v_attrs
@@ -920,11 +970,6 @@ class Col(object):
     @property
     def description(self):
         return self.table.description
-
-    @property
-    def pos(self):
-        """ my column position """
-        return getattr(self.col,'_v_pos',None)
 
     @property
     def col(self):
@@ -948,7 +993,7 @@ class Col(object):
                 min_itemsize = min_itemsize.get(self.name)
 
             if min_itemsize is not None and self.typ.itemsize < min_itemsize:
-                self.typ = _tables().StringCol(itemsize = min_itemsize, pos = getattr(self.typ,'pos',None))
+                self.typ = _tables().StringCol(itemsize = min_itemsize, pos = self.pos)
 
     def validate_and_set(self, table, append, **kwargs):
         self.set_table(table)
@@ -956,16 +1001,22 @@ class Col(object):
         self.validate_attr(append)
         self.set_attr()
 
-    def validate_col(self):
-        """ validate this column & set table data for it """
+    def validate_col(self, itemsize = None):
+        """ validate this column: return the compared against itemsize """
 
         # validate this column for string truncation (or reset to the max size)
-        if self.kind == 'string':
+        dtype = getattr(self,'dtype',None)
+        if self.kind == 'string' or (dtype is not None and dtype.startswith('string')):
 
             c = self.col
             if c is not None:
-                if c.itemsize < self.itemsize:
-                    raise Exception("[%s] column has a min_itemsize of [%s] but itemsize [%s] is required!" % (self.cname,self.itemsize,c.itemsize))
+                if itemsize is None:
+                    itemsize = self.itemsize
+                if c.itemsize < itemsize:
+                    raise Exception("[%s] column has a min_itemsize of [%s] but itemsize [%s] is required!" % (self.cname,itemsize,c.itemsize))
+                return c.itemsize
+
+        return None
 
 
     def validate_attr(self, append):
@@ -984,7 +1035,7 @@ class Col(object):
         """ set the kind for this colummn """
         setattr(self.attrs,self.kind_attr,self.kind)
 
-class DataCol(Col):
+class DataCol(IndexCol):
     """ a data holding column, by definition this is not indexable
 
         Parameters
@@ -1009,11 +1060,20 @@ class DataCol(Col):
     def __repr__(self):
         return "name->%s,cname->%s,dtype->%s,shape->%s" % (self.name,self.cname,self.dtype,self.shape)
 
+    def __eq__(self, other):
+        """ compare 2 col items """
+        return all([ getattr(self,a,None) == getattr(other,a,None) for a in ['name','cname','dtype','pos'] ])
+
     def set_data(self, data):
         self.data = data
         if data is not None:
             if self.dtype is None:
                 self.dtype = data.dtype.name
+
+    def take_data(self):
+        """ return the data & release the memory """
+        self.data, data = None, self.data
+        return data
 
     @property
     def shape(self):
@@ -1039,9 +1099,9 @@ class DataCol(Col):
                 raise Exception("appended items dtype do not match existing items dtype"
                                 " in table!")
 
-    def convert(self, sel):
+    def convert(self, values):
         """ set the data from this selection (and convert to the correct dtype if we can) """
-        self.set_data(sel.values[self.cname])
+        self.set_data(values[self.cname])
 
         # convert to the correct dtype
         if self.dtype is not None:
@@ -1072,18 +1132,32 @@ class Table(object):
         parent : my parent HDFStore
         group  : the group node where the table resides
 
+        Attrs in Table Node
+        -------------------
+        These are attributes that are store in the main table node, they are necessary
+        to recreate these tables when read back in.
+
+        index_axes: a list of tuples of the (original indexing axis and index column)
+        non_index_axes: a list of tuples of the (original index axis and columns on a non-indexing axis)
+        values_axes : a list of the columns which comprise the data of this table
+
         """
     table_type = None
+    obj_type   = None
     ndim       = None
-    axis_names = ['index','column']
 
-    def __init__(self, parent, group):
+    def __init__(self, parent, group, **kwargs):
         self.parent      = parent
         self.group       = group
+        self.version     = getattr(group._v_attrs,'pandas_version',None)
         self.index_axes     = []
         self.non_index_axes = []
         self.values_axes    = []
-        self.selection   = None
+        self.selection      = None
+
+    @property
+    def table_type_short(self):
+        return self.table_type.split('_')[0]
 
     @property
     def pandas_type(self):
@@ -1091,9 +1165,26 @@ class Table(object):
 
     def __repr__(self):
         """ return a pretty representatgion of myself """
-        return "%s (typ->%s,nrows->%s)" % (self.pandas_type,self.table_type,self.nrows)
+        self.infer_axes()
+        return "%s (typ->%s,nrows->%s,indexers->[%s])" % (self.pandas_type,self.table_type_short,self.nrows,','.join([ a.name for a in self.index_axes ]))
 
     __str__ = __repr__
+
+    def copy(self):
+        new_self = copy.copy(self)
+        return new_self
+
+    def validate(self, other):
+        """ validate against an existing table """
+        if other is None: return
+
+        if other.table_type != self.table_type:
+            raise TypeError("incompatible table_type with existing [%s - %s]" %
+                            (other.table_type, self.table_type))
+
+        for c in ['index_axes','non_index_axes','values_axes']:
+            if getattr(self,c,None) != getattr(other,c,None):
+                raise Exception("invalid combinate of [%s] on appending data [%s] vs current table [%s]" % (c,getattr(self,c,None),getattr(other,c,None)))
 
     @property
     def nrows(self):
@@ -1137,21 +1228,25 @@ class Table(object):
         return self.table.description
 
     @property
-    def is_transpose(self):
-        """ does my data need transposition """
-        return False
-
-    @property
     def axes(self):
         return itertools.chain(self.index_axes, self.values_axes)
 
-    def kinds_map(self):
-        """ return a diction of columns -> kinds """
-        return dict([ (a.cname,a.kind) for a in self.axes ])
+    @property
+    def is_transposed(self):
+        return False
+
+    @property
+    def data_orientation(self):
+        """ return a tuple of my permutated axes, non_indexable at the front """
+        return tuple(itertools.chain([ a[0] for a in self.non_index_axes ], [ a.axis for a in self.index_axes ]))
+
+    def queryables(self):
+        """ return a dict of the kinds allowable columns for this object """
+        return dict([ (a.cname,a.kind) for a in self.index_axes ] + [ (self.obj_type._AXIS_NAMES[axis],None) for axis, values in self.non_index_axes ])
 
     def index_cols(self):
         """ return a list of my index cols """
-        return [ i.cname for i in self.index_axes ]
+        return [ (i.axis,i.cname) for i in self.index_axes ]
 
     def values_cols(self):
         """ return a list of my values cols """
@@ -1164,16 +1259,11 @@ class Table(object):
         self.attrs.values_cols = self.values_cols()
         self.attrs.non_index_axes = self.non_index_axes
 
-    def validate(self):
-        """ raise if we have an incompitable table type with the current """
-        et = getattr(self.attrs,'table_type',None)
-        if et is not None and et != self.table_type:
-                raise TypeError("incompatible table_type with existing [%s - %s]" %
-                                (et, self.table_type))
-        ic  = getattr(self.attrs,'index_cols',None)
-        if ic is not None and ic != self.index_cols():
-            raise TypeError("incompatible index cols with existing [%s - %s]" %
-                            (ic, self.index_cols()))
+    def validate_version(self, where = None):
+        """ are we trying to operate on an old version? """
+        if where is not None:
+            if self.version is None or float(self.version) < 0.1:
+                warnings.warn("where criteria is being ignored as we this version is too old (or not-defined) [%s]" % self.version, IncompatibilityWarning)
 
     @property
     def indexables(self):
@@ -1184,10 +1274,11 @@ class Table(object):
             self._indexables = []
 
             # index columns
-            self._indexables.extend([ Col(name = i) for i in self.attrs.index_cols ])
+            self._indexables.extend([ IndexCol(name = name, axis = axis, pos = i) for i, (axis, name) in enumerate(self.attrs.index_cols) ])
 
             # data columns
-            self._indexables.extend([ DataCol.create_for_block(i = i) for i, c in enumerate(self.attrs.values_cols) ])
+            base_pos = len(self._indexables)
+            self._indexables.extend([ DataCol.create_for_block(i = i, pos = base_pos + i ) for i, c in enumerate(self.attrs.values_cols) ])
 
         return self._indexables
 
@@ -1199,7 +1290,7 @@ class Table(object):
 
         Paramaters
         ----------
-        columns : None or list_like (the columns to index - currently supports index/column)
+        columns : None or list_like (the indexers to index)
         optlevel: optimization level (defaults to 6)
         kind    : kind of index (defaults to 'medium')
 
@@ -1209,11 +1300,10 @@ class Table(object):
 
         """
 
-        table = self.table
-        if table is None: return
+        if not self.infer_axes(): return
 
         if columns is None:
-            columns = ['index']
+            columns = [ self.index_axes[0].name ]
         if not isinstance(columns, (tuple,list)):
             columns = [ columns ]
 
@@ -1223,65 +1313,159 @@ class Table(object):
         if kind is not None:
             kw['kind']     = kind
 
+        table = self.table
         for c in columns:
             v = getattr(table.cols,c,None)
-            if v is not None and not v.is_indexed:
-                v.createIndex(**kw)
+            if v is not None:
+
+                # remove the index if the kind/optlevel have changed
+                if v.is_indexed:
+                    index = v.index
+                    cur_optlevel = index.optlevel
+                    cur_kind     = index.kind
+
+                    if kind is not None and cur_kind != kind:
+                        v.removeIndex()
+                    else:
+                        kw['kind'] = cur_kind
+
+                    if optlevel is not None and cur_optlevel != optlevel:
+                        v.removeIndex()
+                    else:
+                        kw['optlevel'] = cur_optlevel
+
+                # create the index
+                if not v.is_indexed:
+                    v.createIndex(**kw)
 
     def read_axes(self, where):
-        """ create and return the axes sniffed from the table """
+        """ create and return the axes sniffed from the table: return boolean for success """
+
+        # validate the version
+        self.validate_version(where)
 
         # infer the data kind
-        self.infer_axes()
+        if not self.infer_axes(): return False
 
         # create the selection
         self.selection = Selection(self, where)
-        self.selection.select()
+        values = self.selection.select()
 
         # convert the data
         for a in self.axes:
-            a.convert(self.selection)
+            a.convert(values)
+
+        return True
 
     def infer_axes(self):
-        """ infer the axes from the indexables """
-        self.index_axes, self.values_axes = [ a.infer(self.table) for a in self.indexables if a.is_indexable ], [ a.infer(self.table) for a in self.indexables if not a.is_indexable ]
-        self.non_index_axes = getattr(self.attrs,'non_index_axes',None) or []
+        """ infer the axes from the indexables:
+              return a boolean indicating if we have a valid table or not """
 
-    def create_axes(self, axes_to_index, obj, validate = True, min_itemsize = None):
+        table = self.table
+        if table is None: 
+            return False
+
+        self.index_axes, self.values_axes = [ a.infer(self.table) for a in self.indexables if a.is_indexable ], [ a.infer(self.table) for a in self.indexables if not a.is_indexable ]
+        self.non_index_axes   = getattr(self.attrs,'non_index_axes',None) or []
+
+        return True
+
+    def get_data_blocks(self, obj):
+        """ return the data blocks for this obj """
+        return obj._data.blocks
+
+    def create_axes(self, axes, obj, validate = True, min_itemsize = None):
         """ create and return the axes
               leagcy tables create an indexable column, indexable index, non-indexable fields
 
         """
 
-        self.index_axes = []
-        self.non_index_axes = []
+        # map axes to numbers
+        axes = [ obj._get_axis_number(a) for a in axes ]
+
+        # do we have an existing table (if so, use its axes)?
+        if self.infer_axes():
+            existing_table = self.copy()
+            axes = [ a.axis for a in existing_table.index_axes]
+        else:
+            existing_table = None
+
+        # currently support on ndim-1 axes
+        if len(axes) != self.ndim-1:
+            raise Exception("currenctly only support ndim-1 indexers in an AppendableTable")
+
+        # create according to the new data
+        self.non_index_axes   = []
 
         # create axes to index and non_index
-        j = 0
+        index_axes_map = dict()
         for i, a in enumerate(obj.axes):
-            if i in axes_to_index:
-                self.index_axes.append(_convert_index(a).set_name(self.axis_names[j]))
-                j += 1
+
+            if i in axes:
+                name = obj._AXIS_NAMES[i]
+                index_axes_map[i] = _convert_index(a).set_name(name).set_axis(i)
             else:
-                self.non_index_axes.append((i,list(a)))
+
+                # we might be able to change the axes on the appending data if necessary
+                append_axis = list(a)
+                if existing_table is not None:
+                    indexer = len(self.non_index_axes)
+                    exist_axis = existing_table.non_index_axes[indexer][1]
+                    if append_axis != exist_axis:
+                        
+                        # ahah! -> reindex
+                        if sorted(append_axis) == sorted(exist_axis):
+                            append_axis = exist_axis
+
+                self.non_index_axes.append((i,append_axis))
+        
+        # set axis positions (based on the axes)
+        self.index_axes = [ index_axes_map[a].set_pos(j) for j, a in enumerate(axes) ]
+        j = len(self.index_axes)
 
         # check for column conflicts
         if validate:
             for a in self.axes:
                 a.maybe_set_size(min_itemsize = min_itemsize)
 
+        # reindex by our non_index_axes
+        for a in self.non_index_axes:
+            obj = obj.reindex_axis(a[1], axis = a[0], copy = False)
+
+        blocks = self.get_data_blocks(obj)
+
         # add my values
         self.values_axes = []
-        for i, b in enumerate(obj._data.blocks):
+        for i, b in enumerate(blocks):
+
+            # shape of the data column are the indexable axes
+            shape  = b.shape[0]
             values = b.values
 
             # a string column
             if b.dtype.name == 'object':
-                atom  = _tables().StringCol(itemsize = values.dtype.itemsize, shape = b.shape[0])
-                utype = 'S8'
+                
+                # itemsize is the maximum length of a string (along any dimension)
+                itemsize = _itemsize_string_array(values)
+
+                # specified min_itemsize?
+                if isinstance(min_itemsize, dict):
+                    itemsize = max(int(min_itemsize.get('values')),itemsize)
+
+                # check for column in the values conflicts
+                if existing_table is not None and validate:
+                    eci = existing_table.values_axes[i].validate_col(itemsize)
+                    if eci > itemsize:
+                        itemsize = eci
+
+                atom  = _tables().StringCol(itemsize = itemsize, shape = shape)
+                utype = 'S%s' % itemsize
+                kind  = 'string'
+
             else:
-                atom  = getattr(_tables(),"%sCol" % b.dtype.name.capitalize())(shape = b.shape[0])
+                atom  = getattr(_tables(),"%sCol" % b.dtype.name.capitalize())(shape = shape)
                 utype = atom._deftype
+                kind  = b.dtype.name
 
             # coerce data to this type
             try:
@@ -1289,8 +1473,29 @@ class Table(object):
             except (Exception), detail:
                 raise Exception("cannot coerce data type -> [dtype->%s]" % b.dtype.name)
 
-            dc = DataCol.create_for_block(i = i, values = list(b.items), kind = b.dtype.name, typ = atom, data = values)
+            dc = DataCol.create_for_block(i = i, values = list(b.items), kind = kind, typ = atom, data = values, pos = j)
+            j += 1
             self.values_axes.append(dc)
+
+        # validate the axes if we have an existing table
+        if validate:
+            self.validate(existing_table)
+
+    def process_axes(self, obj):
+        """ process axes filters """
+
+        def reindex(obj, axis, filt, ordered):
+            axis_name = obj._get_axis_name(axis)
+            ordd = ordered & filt
+            ordd = sorted(ordered.get_indexer(ordd))
+            return obj.reindex_axis(ordered.take(ordd), axis = obj._get_axis_number(axis_name), copy = False)
+            
+        # apply the selection filters (but keep in the same order)
+        if self.selection.filter:
+            for axis, filt in self.selection.filter:
+                obj = reindex(obj, axis, filt, getattr(obj,obj._get_axis_name(axis)))
+
+        return obj
 
     def create_description(self, compression = None, complevel = None):
         """ create the description of the table from the axes & values """
@@ -1352,45 +1557,54 @@ class LegacyTable(Table):
           that can be easily searched
 
         """
-    _indexables = [Col(name = 'index'),Col(name = 'column', index_kind = 'columns_kind'), DataCol(name = 'fields', cname = 'values', kind_attr = 'fields') ]
+    _indexables = [IndexCol(name = 'index',  axis = 1, pos = 0),
+                   IndexCol(name = 'column', axis = 2, pos = 1, index_kind = 'columns_kind'), 
+                   DataCol( name = 'fields', cname = 'values', kind_attr = 'fields', pos = 2) ]
     table_type = 'legacy'
+    ndim       = 3
 
     def write(self, **kwargs):
         raise Exception("write operations are not allowed on legacy tables!")
 
     def read(self, where=None):
-        """ we have 2 indexable columns, with an arbitrary number of data axes """
+        """ we have n indexable columns, with an arbitrary number of data axes """
 
-        self.read_axes(where)
+        
+        if not self.read_axes(where): return None
 
-        index  = self.index_axes[0].values
-        column = self.index_axes[1].values
+        factors  = [ Categorical.from_array(a.values) for a in self.index_axes ]
+        levels   = [ f.levels for f in factors ]
+        N        = [ len(f.levels) for f in factors ]
+        labels   = [ f.labels for f in factors ]
 
-        major = Factor.from_array(index)
-        minor = Factor.from_array(column)
+        # compute the key
+        key      = factor_indexer(N[1:], labels)
 
-        J, K = len(major.levels), len(minor.levels)
-        key = major.labels * K + minor.labels
-
-        panels = []
+        objs = []
         if len(unique(key)) == len(key):
-            sorter, _ = algos.groupsort_indexer(com._ensure_int64(key), J * K)
+
+            sorter, _ = algos.groupsort_indexer(com._ensure_int64(key), np.prod(N))
             sorter = com._ensure_platform_int(sorter)
 
-            # create the panels
+            # create the objs
             for c in self.values_axes:
 
                 # the data need to be sorted
-                sorted_values = c.data.take(sorter, axis=0)
-                major_labels = major.labels.take(sorter)
-                minor_labels = minor.labels.take(sorter)
-                items        = Index(c.values)
+                sorted_values = c.take_data().take(sorter, axis=0)
+                
+                take_labels   = [ l.take(sorter) for l in labels ]
+                items         = Index(c.values)
+                block         = block2d_to_blocknd(sorted_values, items, tuple(N), take_labels)
 
-                block = block2d_to_block3d(sorted_values, items, (J, K),
-                                           major_labels, minor_labels)
+                # create the object
+                mgr = BlockManager([block], [items] + levels)
+                obj = self.obj_type(mgr)
 
-                mgr = BlockManager([block], [items, major.levels, minor.levels])
-                panels.append(Panel(mgr))
+                # permute if needed
+                if self.is_transposed:
+                    obj = obj.transpose(*tuple(Series(self.data_orientation).argsort()))
+
+                objs.append(obj)
 
         else:
             if not self._quiet:  # pragma: no cover
@@ -1398,9 +1612,9 @@ class LegacyTable(Table):
                        'appended')
 
             # reconstruct
-            long_index = MultiIndex.from_arrays([index, column])
+            long_index = MultiIndex.from_arrays([ i.values for i in self.index_axes ])
 
-            panels = []
+
             for c in self.values_axes:
                 lp = DataFrame(c.data, index=long_index, columns=c.values)
 
@@ -1417,37 +1631,41 @@ class LegacyTable(Table):
                 new_values = lp.values.take(indexer, axis=0)
 
                 lp = DataFrame(new_values, index=new_index, columns=lp.columns)
-                panels.append(lp.to_panel())
+                objs.append(lp.to_panel())
 
-        # append the panels
-        wp = concat(panels, axis = 0, verify_integrity = True)
+        # create the composite object
+        if len(objs) == 1:
+            wp = objs[0]
+        else:
+            wp = concat(objs, axis = 0, verify_integrity = True)
 
         # reorder by any non_index_axes
         for axis,labels in self.non_index_axes:
             wp = wp.reindex_axis(labels,axis=axis,copy=False)
 
-        if self.selection.filter:
-            new_minor = sorted(set(wp.minor_axis) & self.selection.filter)
-            wp = wp.reindex(minor=new_minor, copy = False)
+        # apply the selection filters & axis orderings
+        wp = self.process_axes(wp)
 
         return wp
 
 class LegacyFrameTable(LegacyTable):
     """ support the legacy frame table """
     table_type = 'legacy_frame'
+    obj_type   = Panel
     def read(self, *args, **kwargs):
         return super(LegacyFrameTable, self).read(*args, **kwargs)['value']
 
 class LegacyPanelTable(LegacyTable):
     """ support the legacy panel table """
     table_type = 'legacy_panel'
+    obj_type   = Panel
 
 class AppendableTable(LegacyTable):
     """ suppor the new appendable table formats """
     _indexables = None
     table_type = 'appendable'
 
-    def write(self, axes_to_index, obj, append=False, compression=None,
+    def write(self, axes, obj, append=False, compression=None,
               complevel=None, min_itemsize = None, **kwargs):
 
         # create the table if it doesn't exist (or get it if it does)
@@ -1456,7 +1674,7 @@ class AppendableTable(LegacyTable):
                 self.handle.removeNode(self.group, 'table')
 
         # create the axes
-        self.create_axes(axes_to_index = axes_to_index, obj = obj, validate = append, min_itemsize = min_itemsize)
+        self.create_axes(axes = axes, obj = obj, validate = append, min_itemsize = min_itemsize)
 
         if 'table' not in self.group:
 
@@ -1470,27 +1688,21 @@ class AppendableTable(LegacyTable):
             table = self.handle.createTable(self.group, **options)
 
         else:
-
-            # the table must already exist
             table = self.table
-
-            # validate the table
-            self.validate()
 
         # validate the axes and set the kinds
         for a in self.axes:
             a.validate_and_set(table, append)
 
         # add the rows
-        self._write_data()
+        self.write_data()
         self.handle.flush()
 
-    def _write_data(self):
+    def write_data(self):
         """ fast writing of data: requires specific cython routines each axis shape """
 
+        # create the masks & values
         masks  = []
-
-        # create the masks
         for a in self.values_axes:
 
             # figure the mask: only do if we can successfully process this column, otherwise ignore the mask
@@ -1507,7 +1719,7 @@ class AppendableTable(LegacyTable):
         for m in masks[1:]:
             m = mask & m
 
-        # the arguments & values
+        # the arguments
         args   = [ a.cvalues for a in self.index_axes ]
         values = [ a.data for a in self.values_axes ]
 
@@ -1523,34 +1735,51 @@ class AppendableTable(LegacyTable):
             raise Exception("tables cannot write this data -> %s" % str(detail))
 
     def delete(self, where = None):
-        if where is None:
-            return super(LegacyTable, self).delete()
+
+        # delete all rows (and return the nrows)
+        if where is None or not len(where):
+            nrows = self.nrows
+            self.handle.removeNode(self.group, recursive=True)
+            return nrows
 
         # infer the data kind
-        table = self.table
-        self.infer_axes()
+        if not self.infer_axes(): return None
 
         # create the selection
+        table = self.table
         self.selection = Selection(self, where)
-        self.selection.select_coords()
+        values = self.selection.select_coords()
 
         # delete the rows in reverse order
-        l  = list(self.selection.values)
+        l  = Series(values).order()
         ln = len(l)
 
         if ln:
 
-            # if we can do a consecutive removal - do it!
-            if l[0]+ln-1 == l[-1]:
-                table.removeRows(start = l[0], stop = l[-1]+1)
+            # construct groups of consecutive rows
+            diff   = l.diff()
+            groups = list(diff[diff>1].index)
 
-            # one by one
-            else:
-                l.reverse()
-                for c in l:
-                    table.removeRows(c)
+            # 1 group
+            if not len(groups):
+                groups = [0]
 
-                    self.handle.flush()
+            # final element
+            if groups[-1] != ln:
+                groups.append(ln)
+            
+            # initial element
+            if groups[0] != 0:
+                groups.insert(0,0)
+
+            # we must remove in reverse order!
+            pg = groups.pop()
+            for g in reversed(groups):
+                rows = l.take(range(g,pg))
+                table.removeRows(start = rows[rows.index[0]], stop = rows[rows.index[-1]]+1)
+                pg = g
+
+            self.handle.flush()
 
         # return the number of rows removed
         return ln
@@ -1559,33 +1788,47 @@ class AppendableFrameTable(AppendableTable):
     """ suppor the new appendable table formats """
     table_type = 'appendable_frame'
     ndim       = 2
+    obj_type   = DataFrame
+
+    @property
+    def is_transposed(self):
+        return self.index_axes[0].axis == 1
+
+    def get_data_blocks(self, obj):
+        """ these are written transposed """
+        if self.is_transposed:
+            obj = obj.T
+        return obj._data.blocks
 
     def read(self, where=None):
 
-        self.read_axes(where)
+        if not self.read_axes(where): return None
 
-        index   = Index(self.index_axes[0].values)
+        index   = self.index_axes[0].values
         frames  = []
         for a in self.values_axes:
             columns = Index(a.values)
-            block   = make_block(a.cvalues.T, columns, columns)
-            mgr     = BlockManager([ block ], [ columns, index ])
+
+            if self.is_transposed:
+                values   = a.cvalues
+                index_   = columns
+                columns_ = index
+            else:
+                values   = a.cvalues.T
+                index_   = index
+                columns_ = columns
+
+            block   = make_block(values, columns_, columns_)
+            mgr     = BlockManager([ block ], [ columns_, index_ ])
             frames.append(DataFrame(mgr))
         df = concat(frames, axis = 1, verify_integrity = True)
 
         # sort the indicies & reorder the columns
         for axis,labels in self.non_index_axes:
             df = df.reindex_axis(labels,axis=axis,copy=False)
-        columns_ordered = df.columns
 
-        # apply the column filter (but keep columns in the same order)
-        if self.selection.filter:
-            columns = Index(set(columns_ordered) & self.selection.filter)
-            columns = sorted(columns_ordered.get_indexer(columns))
-            df      = df.reindex(columns = columns_ordered.take(columns), copy = False)
-
-        else:
-            df      = df.reindex(columns = columns_ordered, copy = False)
+        # apply the selection filters & axis orderings
+        df = self.process_axes(df)
 
         return df
 
@@ -1593,11 +1836,29 @@ class AppendablePanelTable(AppendableTable):
     """ suppor the new appendable table formats """
     table_type = 'appendable_panel'
     ndim       = 3
+    obj_type   = Panel
+
+    def get_data_blocks(self, obj):
+        """ these are written transposed """
+        if self.is_transposed:
+            obj = obj.transpose(*self.data_orientation)
+        return obj._data.blocks
+
+    @property
+    def is_transposed(self):
+        return self.data_orientation != tuple(range(self.ndim))
+
+class AppendableNDimTable(AppendablePanelTable):
+    """ suppor the new appendable table formats """
+    table_type = 'appendable_ndim'
+    ndim       = 4
+    obj_type   = Panel4D
 
 # table maps
 _TABLE_MAP = {
     'appendable_frame' : AppendableFrameTable,
     'appendable_panel' : AppendablePanelTable,
+    'appendable_ndim'  : AppendableNDimTable,
     'worm'             : WORMTable,
     'legacy_frame'     : LegacyFrameTable,
     'legacy_panel'     : LegacyPanelTable,
@@ -1608,7 +1869,7 @@ def create_table(parent, group, typ = None, **kwargs):
     """ return a suitable Table class to operate """
 
     pt = getattr(group._v_attrs,'pandas_type',None)
-    tt = getattr(group._v_attrs,'table_type',None)
+    tt = getattr(group._v_attrs,'table_type',None) or typ
 
     # a new node
     if pt is None:
@@ -1621,7 +1882,8 @@ def create_table(parent, group, typ = None, **kwargs):
         # distiguish between a frame/table
         tt = 'legacy_panel'
         try:
-            if group.table.description.values.shape[0] == 1:
+            fields = group.table._v_attrs.fields
+            if len(fields) == 1 and fields[0] == 'value':
                 tt = 'legacy_frame'
         except:
             pass
@@ -1629,13 +1891,17 @@ def create_table(parent, group, typ = None, **kwargs):
     return _TABLE_MAP.get(tt)(parent, group, **kwargs)
 
 
+def _itemsize_string_array(arr):
+    """ return the maximum size of elements in a strnig array """
+    return max([ str_len(arr[v]).max() for v in range(arr.shape[0]) ])
+
 def _convert_index(index):
     if isinstance(index, DatetimeIndex):
         converted = index.asi8
-        return Col(converted, 'datetime64', _tables().Int64Col())
+        return IndexCol(converted, 'datetime64', _tables().Int64Col())
     elif isinstance(index, (Int64Index, PeriodIndex)):
         atom = _tables().Int64Col()
-        return Col(index.values, 'integer', atom)
+        return IndexCol(index.values, 'integer', atom)
 
     if isinstance(index, MultiIndex):
         raise Exception('MultiIndex not supported here!')
@@ -1646,36 +1912,36 @@ def _convert_index(index):
 
     if inferred_type == 'datetime64':
         converted = values.view('i8')
-        return Col(converted, 'datetime64', _tables().Int64Col())
+        return IndexCol(converted, 'datetime64', _tables().Int64Col())
     elif inferred_type == 'datetime':
         converted = np.array([(time.mktime(v.timetuple()) +
                             v.microsecond / 1E6) for v in values],
                             dtype=np.float64)
-        return Col(converted, 'datetime', _tables().Time64Col())
+        return IndexCol(converted, 'datetime', _tables().Time64Col())
     elif inferred_type == 'date':
         converted = np.array([time.mktime(v.timetuple()) for v in values],
                             dtype=np.int32)
-        return Col(converted, 'date', _tables().Time32Col())
+        return IndexCol(converted, 'date', _tables().Time32Col())
     elif inferred_type == 'string':
         # atom = _tables().ObjectAtom()
         # return np.asarray(values, dtype='O'), 'object', atom
 
         converted = np.array(list(values), dtype=np.str_)
         itemsize = converted.dtype.itemsize
-        return Col(converted, 'string', _tables().StringCol(itemsize), itemsize = itemsize)
+        return IndexCol(converted, 'string', _tables().StringCol(itemsize), itemsize = itemsize)
     elif inferred_type == 'unicode':
         atom = _tables().ObjectAtom()
-        return Col(np.asarray(values, dtype='O'), 'object', atom)
+        return IndexCol(np.asarray(values, dtype='O'), 'object', atom)
     elif inferred_type == 'integer':
         # take a guess for now, hope the values fit
         atom = _tables().Int64Col()
-        return Col(np.asarray(values, dtype=np.int64), 'integer', atom)
+        return IndexCol(np.asarray(values, dtype=np.int64), 'integer', atom)
     elif inferred_type == 'floating':
         atom = _tables().Float64Col()
-        return Col(np.asarray(values, dtype=np.float64), 'float', atom)
+        return IndexCol(np.asarray(values, dtype=np.float64), 'float', atom)
     else:  # pragma: no cover
         atom = _tables().ObjectAtom()
-        return Col(np.asarray(values, dtype='O'), 'object', atom)
+        return IndexCol(np.asarray(values, dtype='O'), 'object', atom)
 
 
 def _read_array(group, key):
@@ -1791,7 +2057,7 @@ class Term(object):
         op    : a valid op (defaults to '=') (optional)
                 >, >=, <, <=, =, != (not equal) are allowed
         value : a value or list of values (required)
-        kinds : the kinds map (dict of column name -> kind)
+        queryables : a kinds map (dict of column name -> kind), or None i column is non-indexable
 
         Returns
         -------
@@ -1804,21 +2070,19 @@ class Term(object):
         Term('index', '>', '20121114')
         Term('index', ['20121114','20121114'])
         Term('index', datetime(2012,11,14))
-        Term('major>20121114')
-        Term('minor', ['A','B'])
+        Term('major_axis>20121114')
+        Term('minor_axis', ['A','B'])
 
     """
 
     _ops     = ['<=','<','>=','>','!=','=']
     _search  = re.compile("^(?P<field>\w+)(?P<op>%s)(?P<value>.+)$" % '|'.join(_ops))
-    _index   = ['index','major_axis','major']
-    _column  = ['column','minor_axis','minor']
 
-    def __init__(self, field, op = None, value = None, kinds = None):
+    def __init__(self, field, op = None, value = None, queryables = None):
         self.field = None
         self.op    = None
         self.value = None
-        self.kinds = kinds or dict()
+        self.q     = queryables or dict()
         self.filter     = None
         self.condition  = None
 
@@ -1871,14 +2135,6 @@ class Term(object):
         if self.field is None or self.op is None or self.value is None:
             raise Exception("Could not create this term [%s]" % str(self))
 
-        # valid field name
-        if self.field in self._index:
-            self.field = 'index'
-        elif self.field in self._column:
-            self.field = 'column'
-        else:
-            raise Exception("field is not a valid index/column for this term [%s]" % str(self))
-
         # we have valid conditions
         if self.op in ['>','>=','<','<=']:
             if hasattr(self.value,'__iter__') and len(self.value) > 1:
@@ -1887,7 +2143,8 @@ class Term(object):
         if not hasattr(self.value,'__iter__'):
             self.value = [ self.value ]
 
-        self.eval()
+        if len(self.q):
+            self.eval()
 
     def __str__(self):
         return "field->%s,op->%s,value->%s" % (self.field,self.op,self.value)
@@ -1895,20 +2152,31 @@ class Term(object):
     __repr__ = __str__
 
     @property
+    def is_valid(self):
+        """ return True if this is a valid field """
+        return self.field in self.q
+
+    @property
     def is_in_table(self):
         """ return True if this is a valid column name for generation (e.g. an actual column in the table) """
-        return self.field in self.kinds
+        return self.q.get(self.field) is not None
 
     @property
     def kind(self):
         """ the kind of my field """
-        return self.kinds.get(self.field)
+        return self.q.get(self.field)
 
     def eval(self):
         """ set the numexpr expression for this term """
 
-        # convert values
-        values = [ self.convert_value(v) for v in self.value ]
+        if not self.is_valid:
+            raise Exception("query term is not valid [%s]" % str(self))
+
+        # convert values if we are in the table
+        if self.is_in_table:
+            values = [ self.convert_value(v) for v in self.value ]
+        else:
+            values = [ [v, v] for v in self.value ]
 
         # equality conditions
         if self.op in ['=','!=']:
@@ -1921,11 +2189,11 @@ class Term(object):
 
                 # use a filter after reading
                 else:
-                    self.filter = set([ v[1] for v in values ])
+                    self.filter = (self.field,Index([ v[1] for v in values ]))
 
             else:
 
-                self.filter = set([ v[1] for v in values ])
+                self.filter = (self.field,Index([ v[1] for v in values ]))
 
         else:
 
@@ -1933,13 +2201,24 @@ class Term(object):
 
                 self.condition = '(%s %s %s)' % (self.field, self.op, values[0][0])
 
+            else:
+
+                raise Exception("passing a filterable condition to a non-table indexer [%s]" % str(self))
+
     def convert_value(self, v):
 
-        if self.field == 'index':
+        #### a little hacky here, need to really figure out what we should convert ####x
+        if self.field == 'index' or self.field == 'major_axis':
             if self.kind == 'datetime64' :
                 return [lib.Timestamp(v).value, None]
-            elif isinstance(v, datetime):
+            elif isinstance(v, datetime) or hasattr(v,'timetuple') or self.kind == 'date':
                 return [time.mktime(v.timetuple()), None]
+            elif self.kind == 'integer':
+                v = int(float(v))
+                return [v, v]
+            elif self.kind == 'float':
+                v = float(v)
+                return [v, v]
         elif not isinstance(v, basestring):
             return [str(v), None]
 
@@ -1959,7 +2238,6 @@ class Selection(object):
     def __init__(self, table, where=None):
         self.table      = table
         self.where      = where
-        self.values     = None
         self.condition  = None
         self.filter     = None
         self.terms      = self.generate(where)
@@ -1969,10 +2247,10 @@ class Selection(object):
             conds = [ t.condition for t in self.terms if t.condition is not None ]
             if len(conds):
                 self.condition = "(%s)" % ' & '.join(conds)
-            self.filter    = set()
+            self.filter = []
             for t in self.terms:
                 if t.filter is not None:
-                    self.filter |= t.filter
+                    self.filter.append(t.filter)
 
     def generate(self, where):
         """ where can be a : dict,list,tuple,string """
@@ -1985,22 +2263,23 @@ class Selection(object):
             if not any([ isinstance(w, (list,tuple,Term)) for w in where ]):
                 where = [ where ]
 
-        return [ Term(c, kinds = self.table.kinds_map()) for c in where ]
+        queryables = self.table.queryables()
+        return [ Term(c, queryables = queryables) for c in where ]
 
     def select(self):
         """
         generate the selection
         """
         if self.condition is not None:
-            self.values = self.table.table.readWhere(self.condition)
+            return self.table.table.readWhere(self.condition)
         else:
-            self.values = self.table.table.read()
+            return self.table.table.read()
 
     def select_coords(self):
         """
         generate the selection
         """
-        self.values = self.table.table.getWhereList(self.condition)
+        return self.table.table.getWhereList(self.condition, sort = True)
 
 
 def _get_index_factory(klass):
@@ -2010,3 +2289,4 @@ def _get_index_factory(klass):
                                              tz=tz)
         return f
     return klass
+

@@ -36,6 +36,8 @@ def get_test_data(ngroups=NGROUPS, n=N):
 
 class TestMerge(unittest.TestCase):
 
+    _multiprocess_can_split_ = True
+
     def setUp(self):
         # aggregate multiple columns
         self.df = DataFrame({'key1': get_test_data(),
@@ -923,6 +925,8 @@ def _join_by_hand(a, b, how='left'):
 
 class TestConcatenate(unittest.TestCase):
 
+    _multiprocess_can_split_ = True
+
     def setUp(self):
         self.frame = DataFrame(tm.getSeriesData())
         self.mixed_frame = self.frame.copy()
@@ -1427,6 +1431,37 @@ class TestConcatenate(unittest.TestCase):
         # it works!
         concat([ panel1, panel3 ], axis = 1, verify_integrity = True)
 
+    def test_panel4d_concat(self):
+        p4d = tm.makePanel4D()
+
+        p1 = p4d.ix[:, :, :5, :]
+        p2 = p4d.ix[:, :, 5:, :]
+
+        result = concat([p1, p2], axis=2)
+        tm.assert_panel4d_equal(result, p4d)
+
+        p1 = p4d.ix[:, :, :, :2]
+        p2 = p4d.ix[:, :, :, 2:]
+
+        result = concat([p1, p2], axis=3)
+        tm.assert_panel4d_equal(result, p4d)
+
+    def test_panel4d_concat_mixed_type(self):
+        p4d = tm.makePanel4D()
+
+        # if things are a bit misbehaved
+        p1 = p4d.ix[:, :2, :, :2]
+        p2 = p4d.ix[:, :, :, 2:]
+        p1['L5'] = 'baz'
+
+        result = concat([p1, p2], axis=3)
+
+        p2['L5'] = np.nan
+        expected = concat([p1, p2], axis=3)
+        expected = expected.ix[result.labels]
+
+        tm.assert_panel4d_equal(result, expected)
+
     def test_concat_series(self):
         ts = tm.makeTimeSeries()
         ts.name = 'foo'
@@ -1461,6 +1496,18 @@ class TestConcatenate(unittest.TestCase):
         result = concat(pieces, keys=['A', 'B', 'C'], axis=1)
         expected = DataFrame(pieces, index=['A', 'B', 'C']).T
         assert_frame_equal(result, expected)
+
+        # preserve series names, #2489
+        s = Series(randn(5), name='A')
+        s2 = Series(randn(5), name='B')
+
+        result = concat([s, s2], axis=1)
+        expected = DataFrame({'A': s, 'B': s2})
+        assert_frame_equal(result, expected)
+
+        s2.name = None
+        result = concat([s, s2], axis=1)
+        self.assertTrue(np.array_equal(result.columns, range(2)))
 
     def test_concat_single_with_key(self):
         df = DataFrame(np.random.randn(10, 4))

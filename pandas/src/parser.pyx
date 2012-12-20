@@ -120,6 +120,7 @@ cdef extern from "parser/tokenizer.h":
         int delim_whitespace       # consume tabs / spaces instead
         char quotechar             # quote character */
         char escapechar            # escape character */
+        char lineterminator
         int skipinitialspace       # ignore spaces following delimiter? */
         int quoting                # style of quoting to write */
 
@@ -235,6 +236,7 @@ cdef class TextReader:
 
     cdef public:
         int leading_cols, table_width, skip_footer, buffer_lines
+        object allow_leading_cols
         object delimiter, converters, delim_whitespace
         object na_values, true_values, false_values
         object memory_map
@@ -270,6 +272,8 @@ cdef class TextReader:
                   doublequote=True,
                   quotechar=b'"',
                   quoting=0,
+                  lineterminator=None,
+
                   encoding=None,
 
                   comment=None,
@@ -287,6 +291,7 @@ cdef class TextReader:
                   false_values=None,
 
                   compact_ints=False,
+                  allow_leading_cols=True,
                   use_unsigned=False,
                   low_memory=False,
                   buffer_lines=None,
@@ -322,6 +327,11 @@ cdef class TextReader:
 
         self.parser.doublequote = doublequote
         self.parser.skipinitialspace = skipinitialspace
+
+        if lineterminator is not None:
+            if len(lineterminator) != 1:
+                raise ValueError('Only length-1 line terminators supported')
+            self.parser.lineterminator = ord(lineterminator)
 
         if len(decimal) != 1:
             raise ValueError('Only length-1 decimal markers supported')
@@ -414,6 +424,7 @@ cdef class TextReader:
         #----------------------------------------
         # header stuff
 
+        self.allow_leading_cols = allow_leading_cols
         self.leading_cols = 0
 
         # TODO: no header vs. header is not the first row
@@ -454,6 +465,9 @@ cdef class TextReader:
         cdef:
             int status
             void *ptr
+
+        self.parser.cb_io = NULL
+        self.parser.cb_cleanup = NULL
 
         if isinstance(source, basestring) and self.compression:
             if self.compression == 'gzip':
@@ -593,7 +607,9 @@ cdef class TextReader:
                                    'data has %d fields'
                                    % (passed_count, field_count))
 
-            self.leading_cols = field_count - passed_count
+            # oh boy, #2442
+            if self.allow_leading_cols:
+                self.leading_cols = field_count - passed_count
         else:
             # TODO: some better check here
             # field_count = len(header)
@@ -985,10 +1001,18 @@ cdef class TextReader:
 
     cdef _get_column_name(self, Py_ssize_t i, Py_ssize_t nused):
         if self.has_usecols and self.names is not None:
-            return self.names[nused]
+            if len(self.names) == len(self.usecols):
+                return self.names[nused]
+            else:
+                return self.names[i]
         else:
             if self.header is not None:
-                return self.header[i - self.leading_cols]
+                j = i - self.leading_cols
+                # hack for #2442
+                if j == len(self.header):
+                    return j
+                else:
+                    return self.header[j]
             else:
                 return None
 
@@ -1006,10 +1030,20 @@ cdef object _false_values = [b'False', b'FALSE', b'false']
 def _ensure_encoded(list lst):
     cdef list result = []
     for x in lst:
-        if not PyBytes_Check(x):
+        if PyUnicode_Check(x):
             x = PyUnicode_AsUTF8String(x)
+        elif not PyBytes_Check(x):
+            x = asbytes(x)
+
         result.append(x)
     return result
+
+cdef asbytes(object o):
+    if PY3:
+        return str(o).encode('utf-8')
+    else:
+        return str(o)
+
 
 def _is_file_like(obj):
     if PY3:

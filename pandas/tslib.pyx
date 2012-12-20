@@ -7,6 +7,11 @@ import numpy as np
 
 from cpython cimport *
 
+# Cython < 0.17 doesn't have this in cpython
+cdef extern from "Python.h":
+    cdef PyTypeObject *Py_TYPE(object)
+
+
 from libc.stdlib cimport free
 
 from util cimport is_integer_object, is_datetime64_object
@@ -604,11 +609,24 @@ cdef convert_to_tsobject(object ts, object tz):
         if tz is not None:
             # sort of a temporary hack
             if ts.tzinfo is not None:
-                ts = tz.normalize(ts)
-                obj.value = _pydatetime_to_dts(ts, &obj.dts)
-                obj.tzinfo = ts.tzinfo
+                if hasattr(tz, 'normalize'):
+                    ts = tz.normalize(ts)
+                    obj.value = _pydatetime_to_dts(ts, &obj.dts)
+                    obj.tzinfo = ts.tzinfo
+                else: #tzoffset
+                    ts_offset = _get_utcoffset(ts.tzinfo, ts)
+                    obj.value = _pydatetime_to_dts(ts, &obj.dts)
+                    obj.value -= _delta_to_nanoseconds(ts_offset)
+                    tz_offset = _get_utcoffset(tz, ts)
+                    obj.value += _delta_to_nanoseconds(tz_offset)
+
+                    obj.tzinfo = tz
             elif not _is_utc(tz):
-                ts = tz.localize(ts)
+                try:
+                    ts = tz.localize(ts)
+                except AttributeError:
+                    ts = ts.replace(tzinfo=tz)
+
                 obj.value = _pydatetime_to_dts(ts, &obj.dts)
                 offset = _get_utcoffset(ts.tzinfo, ts)
                 obj.value -= _delta_to_nanoseconds(offset)

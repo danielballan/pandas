@@ -2,7 +2,6 @@
 
 echo "inside $0"
 
-python setup.py build_ext install
 if [ x"$VBENCH" != x"true" ]; then
     nosetests --exe -w /tmp -A "not slow" pandas;
     exit

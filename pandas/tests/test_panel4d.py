@@ -29,13 +29,6 @@ def add_nans(panel4d):
         panel = panel4d[label]
         tm.add_nans(panel)
 
-def _skip_if_no_scipy():
-    try:
-        import scipy.stats
-    except ImportError:
-        raise nose.SkipTest
-
-
 class SafeForLongAndSparse(object):
 
     _multiprocess_can_split_ = True
@@ -74,8 +67,11 @@ class SafeForLongAndSparse(object):
         self._check_stat_op('max', np.max)
 
     def test_skew(self):
-        _skip_if_no_scipy()
-        from scipy.stats import skew
+        try:
+            from scipy.stats import skew
+        except ImportError:
+            raise nose.SkipTest
+
         def this_skew(x):
             if len(x) < 3:
                 return np.nan
@@ -541,7 +537,8 @@ class CheckIndexing(object):
         res3 = self.panel4d.set_value('l4', 'ItemE', 'foobar', 'baz', 5)
         self.assert_(com.is_float_dtype(res3['l4'].values))
 
-class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAndSparse):
+class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
+                  SafeForLongAndSparse):
 
     _multiprocess_can_split_ = True
 
@@ -550,7 +547,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
         assert_panel4d_equal(x, y)
 
     def setUp(self):
-        self.panel4d = tm.makePanel4D()
+        self.panel4d = tm.makePanel4D(nper=8)
         add_nans(self.panel4d)
 
     def test_constructor(self):
@@ -890,11 +887,38 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
     #    self.assertEqual(wp['bool'].values.dtype, np.bool_)
     #    assert_frame_equal(wp['bool'], panel['bool'])
 
+    def test_update(self):
+
+        p4d = Panel4D([[[[1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.]],
+                        [[1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.],
+                         [1.5, np.nan, 3.]]]])
+
+        other = Panel4D([[[[3.6, 2., np.nan]],
+                          [[np.nan, np.nan, 7]]]])
+
+        p4d.update(other)
+
+        expected = Panel4D([[[[3.6, 2, 3.],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.]],
+                             [[1.5, np.nan, 7],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.],
+                              [1.5, np.nan, 3.]]]])
+
+        assert_panel4d_equal(p4d, expected)
+
     def test_filter(self):
-        pass
+        raise nose.SkipTest
 
     def test_apply(self):
-        pass
+        raise nose.SkipTest
 
     def test_compound(self):
         raise nose.SkipTest
@@ -1026,5 +1050,6 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse, SafeForLongAn
 
 if __name__ == '__main__':
     import nose
-    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb', '--pdb-failure'],
+    nose.runmodule(argv=[__file__,'-vvs','-x','--pdb', '--pdb-failure',
+                         '--with-timer'],
                    exit=False)

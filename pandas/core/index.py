@@ -159,7 +159,8 @@ class Index(np.ndarray):
         Invoked by bytes(df) in py3 only.
         Yields a bytestring in both py2/py3.
         """
-        return com.console_encode(self.__unicode__())
+        encoding = com.get_option("display.encoding")
+        return self.__unicode__().encode(encoding , 'replace')
 
     def __unicode__(self):
         """
@@ -172,7 +173,7 @@ class Index(np.ndarray):
         else:
             data = self
 
-        prepr = com.pprint_thing(data)
+        prepr = com.pprint_thing(data, escape_chars=('\t','\r','\n'))
         return '%s(%s, dtype=%s)' % (type(self).__name__, prepr, self.dtype)
 
     def __repr__(self):
@@ -422,7 +423,8 @@ class Index(np.ndarray):
 
         header = []
         if name:
-            header.append(com.pprint_thing(self.name)
+            header.append(com.pprint_thing(self.name,
+                                           escape_chars=('\t','\r','\n'))
                           if self.name is not None else '')
 
         if formatter is not None:
@@ -443,7 +445,8 @@ class Index(np.ndarray):
             values = lib.maybe_convert_objects(values, safe=1)
 
         if values.dtype == np.object_:
-            result = [com.pprint_thing(x) for x in values]
+            result = [com.pprint_thing(x,escape_chars=('\t','\r','\n'))
+                      for x in values]
         else:
             result = _trim_front(format_array(values, None, justify='left'))
         return header + result
@@ -1153,7 +1156,7 @@ class Index(np.ndarray):
         -------
         new_index : Index
         """
-        arr = np.delete(np.asarray(self), loc)
+        arr = np.delete(self.values, loc)
         return Index(arr)
 
     def insert(self, loc, item):
@@ -1377,7 +1380,8 @@ class MultiIndex(Index):
         Invoked by bytes(df) in py3 only.
         Yields a bytestring in both py2/py3.
         """
-        return com.console_encode(self.__unicode__())
+        encoding = com.get_option("display.encoding")
+        return self.__unicode__().encode(encoding , 'replace')
 
     def __unicode__(self):
         """
@@ -1396,7 +1400,7 @@ class MultiIndex(Index):
         else:
             values = self.values
 
-        summary = com.pprint_thing(values)
+        summary = com.pprint_thing(values, escape_chars=('\t','\r','\n'))
 
         np.set_printoptions(threshold=options['threshold'])
 
@@ -1566,7 +1570,8 @@ class MultiIndex(Index):
                 formatted = lev.take(lab).format(formatter=formatter)
             else:
                 # weird all NA case
-                formatted = [com.pprint_thing(x) for x in com.take_1d(lev.values, lab)]
+                formatted = [com.pprint_thing(x,escape_chars=('\t','\r','\n'))
+                             for x in com.take_1d(lev.values, lab)]
             stringified_levels.append(formatted)
 
         result_levels = []
@@ -1574,13 +1579,14 @@ class MultiIndex(Index):
             level = []
 
             if names:
-                level.append(com.pprint_thing(name) if name is not None else '')
+                level.append(com.pprint_thing(name,escape_chars=('\t','\r','\n'))
+                             if name is not None else '')
 
             level.extend(np.array(lev, dtype=object))
             result_levels.append(level)
 
         if sparsify is None:
-            sparsify = get_option("print.multi_sparse")
+            sparsify = get_option("display.multi_sparse")
 
         if sparsify:
             # little bit of a kludge job for #1217

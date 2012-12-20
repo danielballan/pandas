@@ -317,6 +317,7 @@ class TestGroupBy(unittest.TestCase):
             self.assert_((self.df.ix[v]['B'] == k[1]).all())
 
     def test_aggregate_str_func(self):
+        from pandas.util.compat import OrderedDict
         def _check_results(grouped):
             # single series
             result = grouped['A'].agg('std')
@@ -329,10 +330,10 @@ class TestGroupBy(unittest.TestCase):
             assert_frame_equal(result, expected)
 
             # group frame by function dict
-            result = grouped.agg({'A' : 'var', 'B' : 'std', 'C' : 'mean'})
-            expected = DataFrame({'A' : grouped['A'].var(),
-                                  'B' : grouped['B'].std(),
-                                  'C' : grouped['C'].mean()})
+            result = grouped.agg(OrderedDict([['A' , 'var'], ['B' , 'std'], ['C' , 'mean']]))
+            expected = DataFrame(OrderedDict([['A', grouped['A'].var()],
+                                  ['B', grouped['B'].std()],
+                                  ['C', grouped['C'].mean()]]))
             assert_frame_equal(result, expected)
 
         by_weekday = self.tsframe.groupby(lambda x: x.weekday())
@@ -810,6 +811,7 @@ class TestGroupBy(unittest.TestCase):
         assert_series_equal(result, expected)
 
     def test_groupby_as_index_agg(self):
+        from pandas.util.compat import OrderedDict
         grouped = self.df.groupby('A', as_index=False)
 
         # single-key
@@ -818,7 +820,7 @@ class TestGroupBy(unittest.TestCase):
         expected = grouped.mean()
         assert_frame_equal(result, expected)
 
-        result2 = grouped.agg({'C' : np.mean, 'D' : np.sum})
+        result2 = grouped.agg(OrderedDict([['C' , np.mean], ['D' , np.sum]]))
         expected2 = grouped.mean()
         expected2['D'] = grouped.sum()['D']
         assert_frame_equal(result2, expected2)
@@ -837,7 +839,7 @@ class TestGroupBy(unittest.TestCase):
         expected = grouped.mean()
         assert_frame_equal(result, expected)
 
-        result2 = grouped.agg({'C' : np.mean, 'D' : np.sum})
+        result2 = grouped.agg(OrderedDict([['C' , np.mean], ['D' , np.sum]]))
         expected2 = grouped.mean()
         expected2['D'] = grouped.sum()['D']
         assert_frame_equal(result2, expected2)
@@ -1262,6 +1264,18 @@ class TestGroupBy(unittest.TestCase):
         result = grouped.apply(f)
         for key, group in grouped:
             assert_frame_equal(result.ix[key], f(group))
+
+    def test_apply_chunk_view(self):
+        # Low level tinkering could be unsafe, make sure not
+        df = DataFrame({'key': [1, 1, 1, 2, 2, 2, 3, 3, 3],
+                        'value': range(9)})
+
+        # return view
+        f = lambda x: x[:2]
+
+        result = df.groupby('key', group_keys=False).apply(f)
+        expected = df.take([0, 1, 3, 4, 6, 7])
+        assert_frame_equal(result, expected)
 
     def test_groupby_series_indexed_differently(self):
         s1 = Series([5.0,-9.0,4.0,100.,-5.,55.,6.7],
@@ -1736,12 +1750,12 @@ class TestGroupBy(unittest.TestCase):
         assert_frame_equal(result, expected)
 
     def test_rank_apply(self):
-        lev1 = np.array([rands(10) for _ in xrange(1000)], dtype=object)
+        lev1 = np.array([rands(10) for _ in xrange(100)], dtype=object)
         lev2 = np.array([rands(10) for _ in xrange(130)], dtype=object)
-        lab1 = np.random.randint(0, 1000, size=5000)
-        lab2 = np.random.randint(0, 130, size=5000)
+        lab1 = np.random.randint(0, 100, size=500)
+        lab2 = np.random.randint(0, 130, size=500)
 
-        df = DataFrame({'value' : np.random.randn(5000),
+        df = DataFrame({'value' : np.random.randn(500),
                         'key1' : lev1.take(lab1),
                         'key2' : lev2.take(lab2)})
 
@@ -1883,8 +1897,8 @@ class TestGroupBy(unittest.TestCase):
 
         grouped = self.df.groupby('A')
 
-        exmean = grouped.agg({'C' : np.mean, 'D' : np.mean})
-        exstd = grouped.agg({'C' : np.std, 'D' : np.std})
+        exmean = grouped.agg(OrderedDict([['C' , np.mean], ['D' , np.mean]]))
+        exstd = grouped.agg(OrderedDict([['C' , np.std], ['D' , np.std]]))
 
         expected = concat([exmean, exstd], keys=['mean', 'std'], axis=1)
         expected = expected.swaplevel(0, 1, axis=1).sortlevel(0, axis=1)
@@ -1895,39 +1909,43 @@ class TestGroupBy(unittest.TestCase):
         assert_frame_equal(result, expected)
 
         # be careful
-        result = grouped.aggregate({'C' : np.mean,
-                                     'D' : [np.mean, np.std]})
-        expected = grouped.aggregate({'C' : [np.mean],
-                                      'D' : [np.mean, np.std]})
+        result = grouped.aggregate(OrderedDict([['C' , np.mean],
+                                                [ 'D' , [np.mean, np.std]]]))
+        expected = grouped.aggregate(OrderedDict([['C' , np.mean],
+                                                [ 'D' , [np.mean, np.std]]]))
         assert_frame_equal(result, expected)
 
 
         def foo(x): return np.mean(x)
         def bar(x): return np.std(x, ddof=1)
-        result = grouped.aggregate({'C' : np.mean,
-                                    'D' : OrderedDict([['foo', np.mean],
-                                           ['bar', np.std]])})
+        d=OrderedDict([['C' , np.mean],
+                                 ['D', OrderedDict([['foo', np.mean],
+                                                              ['bar', np.std]])]])
+        result = grouped.aggregate(d)
 
-        expected = grouped.aggregate({'C' : [np.mean],
-                                      'D' : [foo, bar]})
+        d = OrderedDict([['C' , [np.mean]],['D' , [foo, bar]]])
+        expected = grouped.aggregate(d)
 
         assert_frame_equal(result, expected)
 
     def test_multi_function_flexible_mix(self):
         # GH #1268
-
+        from pandas.util.compat import OrderedDict
         grouped = self.df.groupby('A')
 
-        result = grouped.aggregate({'C' : {'foo' : 'mean',
-                                          'bar' : 'std'},
-                                    'D' : 'sum'})
-        result2 = grouped.aggregate({'C' : {'foo' : 'mean',
-                                           'bar' : 'std'},
-                                    'D' : ['sum']})
+        d = OrderedDict([['C' , OrderedDict([['foo' , 'mean'],
+                                                                ['bar' , 'std']])],
+                                    ['D' , 'sum']])
+        result = grouped.aggregate(d)
+        d2 = OrderedDict([['C' , OrderedDict([['foo' , 'mean'],
+                                                                  ['bar' , 'std']])],
+                                    ['D' ,[ 'sum']]])
+        result2 = grouped.aggregate(d2)
 
-        expected = grouped.aggregate({'C' : {'foo' : 'mean',
-                                             'bar' : 'std'},
-                                      'D' : {'sum' : 'sum'}})
+        d3 = OrderedDict([['C' , OrderedDict([['foo' , 'mean'],
+                                                                ['bar' , 'std']])],
+                                    ['D' , {'sum':'sum'}]])
+        expected = grouped.aggregate(d3)
 
         assert_frame_equal(result, expected)
         assert_frame_equal(result2, expected)

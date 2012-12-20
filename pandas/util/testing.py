@@ -309,12 +309,12 @@ def makePeriodSeries(nper=None):
     return Series(randn(nper), index=makePeriodIndex(nper))
 
 
-def getTimeSeriesData():
-    return dict((c, makeTimeSeries()) for c in getCols(K))
+def getTimeSeriesData(nper=None):
+    return dict((c, makeTimeSeries(nper)) for c in getCols(K))
 
 
-def makeTimeDataFrame():
-    data = getTimeSeriesData()
+def makeTimeDataFrame(nper=None):
+    data = getTimeSeriesData(nper)
     return DataFrame(data)
 
 
@@ -327,13 +327,14 @@ def makePeriodFrame():
     return DataFrame(data)
 
 
-def makePanel():
+def makePanel(nper=None):
     cols = ['Item' + c for c in string.ascii_uppercase[:K - 1]]
-    data = dict((c, makeTimeDataFrame()) for c in cols)
+    data = dict((c, makeTimeDataFrame(nper)) for c in cols)
     return Panel.fromDict(data)
 
-def makePanel4D():
-    return Panel4D(dict(l1 = makePanel(), l2 = makePanel(), l3 = makePanel()))
+def makePanel4D(nper=None):
+    return Panel4D(dict(l1 = makePanel(nper), l2 = makePanel(nper),
+                        l3 = makePanel(nper)))
 
 def makeCustomIndex(nentries, nlevels, prefix='#', names=False, ndupe_l=None,
                     idx_type=None):
@@ -357,7 +358,7 @@ def makeCustomIndex(nentries, nlevels, prefix='#', names=False, ndupe_l=None,
         if unspecified, string labels will be generated.
     """
 
-    from collections import Counter
+    from pandas.util.compat import Counter
     if ndupe_l is None:
         ndupe_l = [1] * nentries
     assert len(ndupe_l) <= nentries
@@ -412,7 +413,7 @@ def makeCustomIndex(nentries, nlevels, prefix='#', names=False, ndupe_l=None,
 
     # convert tuples to index
     if nentries == 1:
-        index = Index.from_tuples(tuples[0], name=names[0])
+        index = Index(tuples[0], name=names[0])
     else:
         index = MultiIndex.from_tuples(tuples, names=names)
     return index

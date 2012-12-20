@@ -41,8 +41,7 @@ class AmbiguousIndexError(PandasError, KeyError):
 
 def isnull(obj):
     '''
-    Replacement for numpy.isnan / -numpy.isfinite which is suitable
-    for use on object arrays.
+    Detect missing values (NaN in numeric arrays, None/NaN in object arrays)
 
     Parameters
     ----------
@@ -52,6 +51,9 @@ def isnull(obj):
     -------
     boolean ndarray or boolean
     '''
+    return _isnull(obj)
+
+def _isnull_new(obj):
     if lib.isscalar(obj):
         return lib.checknull(obj)
 
@@ -65,12 +67,10 @@ def isnull(obj):
         return _isnull_ndarraylike(obj)
     else:
         return obj is None
-isnull_new = isnull
 
-def isnull_old(obj):
+def _isnull_old(obj):
     '''
-    Replacement for numpy.isnan / -numpy.isfinite which is suitable
-    for use on object arrays.  Treat None, NaN, INF, -INF as null.
+    Detect missing values. Treat None, NaN, INF, -INF as null.
 
     Parameters
     ----------
@@ -88,14 +88,16 @@ def isnull_old(obj):
         return _isnull_ndarraylike_old(obj)
     elif isinstance(obj, PandasObject):
         # TODO: optimize for DataFrame, etc.
-        return obj.apply(isnull_old)
+        return obj.apply(_isnull_old)
     elif isinstance(obj, list) or hasattr(obj, '__array__'):
         return _isnull_ndarraylike_old(obj)
     else:
         return obj is None
 
-def use_inf_as_null(flag):
-    '''
+_isnull = _isnull_new
+
+def _use_inf_as_null(key):
+    '''Option change callback for null/inf behaviour
     Choose which replacement for numpy.isnan / -numpy.isfinite is used.
 
     Parameters
@@ -113,10 +115,11 @@ def use_inf_as_null(flag):
     * http://stackoverflow.com/questions/4859217/
       programmatically-creating-variables-in-python/4859312#4859312
     '''
+    flag = get_option(key)
     if flag == True:
-        globals()['isnull'] = isnull_old
+        globals()['_isnull'] = _isnull_old
     else:
-        globals()['isnull'] = isnull_new
+        globals()['_isnull'] = _isnull_new
 
 
 
@@ -141,9 +144,11 @@ def _isnull_ndarraylike(obj):
         # this is the NaT pattern
         result = values.view('i8') == tslib.iNaT
     elif issubclass(values.dtype.type, np.timedelta64):
-        result = -np.isfinite(values.view('i8'))
+        # -np.isfinite(values.view('i8'))
+        result = np.ones(values.shape, dtype=bool)
     else:
-        result = -np.isfinite(obj)
+        # -np.isfinite(obj)
+        result = np.isnan(obj)
     return result
 
 
@@ -454,6 +459,7 @@ _diff_special = {
 }
 
 def diff(arr, n, axis=0):
+    n = int(n)
     dtype = arr.dtype
     if issubclass(dtype.type, np.integer):
         dtype = np.float64
@@ -642,7 +648,6 @@ def _possibly_cast_item(obj, item, dtype):
             obj[item] = chunk.astype(np.object_)
         elif not issubclass(dtype, (np.integer, np.bool_)):  # pragma: no cover
             raise ValueError("Unexpected dtype encountered: %s" % dtype)
-
 
 def _is_bool_indexer(key):
     if isinstance(key, np.ndarray) and key.dtype == np.object_:
@@ -1086,7 +1091,21 @@ class UTF8Recoder:
         return self.reader.next().encode("utf-8")
 
 
-def _get_handle(path, mode, encoding=None):
+def _get_handle(path, mode, encoding=None, compression=None):
+    if compression is not None:
+        if encoding is not None:
+            raise ValueError('encoding + compression not yet supported')
+
+        if compression == 'gzip':
+            import gzip
+            return gzip.GzipFile(path, 'rb')
+        elif compression == 'bz2':
+            import bz2
+            return bz2.BZ2File(path, 'rb')
+        else:
+            raise ValueError('Unrecognized compression type: %s' %
+                             compression)
+
     if py3compat.PY3:  # pragma: no cover
         if encoding:
             f = open(path, mode, encoding=encoding)
@@ -1179,7 +1198,7 @@ def in_interactive_session():
     returns True if running under python/ipython interactive shell
     """
     import __main__ as main
-    return not hasattr(main, '__file__')
+    return not hasattr(main, '__file__') or get_option('mode.sim_interactive')
 
 def in_qtconsole():
     """
@@ -1211,7 +1230,7 @@ def in_qtconsole():
 # 2) If you need to send something to the console, use console_encode().
 #
 #    console_encode() should (hopefully) choose the right encoding for you
-#    based on the encoding set in option "print.encoding"
+#    based on the encoding set in option "display.encoding"
 #
 # 3) if you need to write something out to file, use
 #    pprint_thing_encoded(encoding).
@@ -1221,13 +1240,13 @@ def in_qtconsole():
 #    working with straight ascii.
 
 
-def _pprint_seq(seq, _nest_lvl=0):
+def _pprint_seq(seq, _nest_lvl=0, **kwds):
     """
     internal. pprinter for iterables. you should probably use pprint_thing()
     rather then calling this directly.
     """
     fmt = u"[%s]" if hasattr(seq, '__setitem__') else u"(%s)"
-    return fmt % ", ".join(pprint_thing(e, _nest_lvl + 1) for e in seq)
+    return fmt % ", ".join(pprint_thing(e, _nest_lvl + 1, **kwds) for e in seq)
 
 def _pprint_dict(seq, _nest_lvl=0):
     """
@@ -1243,7 +1262,7 @@ def _pprint_dict(seq, _nest_lvl=0):
     return fmt % ", ".join(pairs)
 
 
-def pprint_thing(thing, _nest_lvl=0):
+def pprint_thing(thing, _nest_lvl=0, escape_chars=None):
     """
     This function is the sanctioned way of converting objects
     to a unicode representation.
@@ -1270,11 +1289,11 @@ def pprint_thing(thing, _nest_lvl=0):
          hasattr(thing,'next'):
         return unicode(thing)
     elif (isinstance(thing, dict) and
-          _nest_lvl < get_option("print.pprint_nest_depth")):
+          _nest_lvl < get_option("display.pprint_nest_depth")):
         result = _pprint_dict(thing, _nest_lvl)
     elif _is_sequence(thing) and _nest_lvl < \
-		get_option("print.pprint_nest_depth"):
-        result = _pprint_seq(thing, _nest_lvl)
+		get_option("display.pprint_nest_depth"):
+        result = _pprint_seq(thing, _nest_lvl, escape_chars=escape_chars)
     else:
         # when used internally in the package, everything
         # should be unicode text. However as an aid to transition
@@ -1290,23 +1309,29 @@ def pprint_thing(thing, _nest_lvl=0):
             # either utf-8 or we replace errors
             result = str(thing).decode('utf-8', "replace")
 
-        result=result.replace("\t",r'\t') # escape tabs
+        translate = {'\t': r'\t',
+                     '\n': r'\n',
+                     '\r': r'\r',
+                     }
+        escape_chars = escape_chars or tuple()
+        for c in escape_chars:
+            result=result.replace(c,translate[c])
 
     return unicode(result)  # always unicode
 
 
-def pprint_thing_encoded(object, encoding='utf-8', errors='replace'):
+def pprint_thing_encoded(object, encoding='utf-8', errors='replace', **kwds):
     value = pprint_thing(object)  # get unicode representation of object
-    return value.encode(encoding, errors)
+    return value.encode(encoding, errors,**kwds)
 
 
-def console_encode(object):
+def console_encode(object, **kwds):
     """
     this is the sanctioned way to prepare something for
     sending *to the console*, it delegates to pprint_thing() to get
     a unicode representation of the object relies on the global encoding
-    set in print.encoding. Use this everywhere
+    set in display.encoding. Use this everywhere
     where you output to the console.
     """
     return pprint_thing_encoded(object,
-             get_option("print.encoding"))
+             get_option("display.encoding"))

@@ -51,11 +51,15 @@ except ImportError:
 setuptools_kwargs = {}
 if sys.version_info[0] >= 3:
 
+    min_numpy_ver = 1.6
+    if sys.version_info[1] >= 3: # 3.3 needs numpy 1.7+
+        min_numpy_ver = "1.7.0b2"
+
     setuptools_kwargs = {'use_2to3': True,
                          'zip_safe': False,
                          'install_requires': ['python-dateutil >= 2',
                                               'pytz',
-                                              'numpy >= 1.4'],
+                                              'numpy >= %s' % min_numpy_ver],
                          'use_2to3_exclude_fixers': ['lib2to3.fixes.fix_next',
                                                     ],
                         }
@@ -64,21 +68,13 @@ if sys.version_info[0] >= 3:
             "\n$ pip install distribute")
 
 else:
-    if sys.version_info[1] == 5:
-        # dateutil >= 2.1 doesn't work on Python 2.5
-        setuptools_kwargs = {
-            'install_requires': ['python-dateutil < 2',
-                                 'pytz',
-                                 'numpy >= 1.6'],
-            'zip_safe' : False,
-        }
-    else:
-        setuptools_kwargs = {
-            'install_requires': ['python-dateutil',
-                                 'pytz',
-                                 'numpy >= 1.6'],
-            'zip_safe' : False,
-        }
+    setuptools_kwargs = {
+        'install_requires': ['python-dateutil',
+                             'pytz',
+                             'numpy >= 1.6.1'],
+        'zip_safe' : False,
+    }
+
     if not _have_setuptools:
         try:
             import numpy
@@ -97,7 +93,7 @@ except ImportError:
     sys.exit(nonumpy_msg)
 
 if np.__version__ < '1.6.1':
-    msg = "pandas requires NumPy >= 1.6 due to datetime64 dependency"
+    msg = "pandas requires NumPy >= 1.6.1 due to datetime64 dependency"
     sys.exit(msg)
 
 from distutils.extension import Extension
@@ -205,7 +201,7 @@ CLASSIFIERS = [
 MAJOR = 0
 MINOR = 10
 MICRO = 0
-ISRELEASED = False
+ISRELEASED = True
 VERSION = '%d.%d.%d' % (MAJOR, MINOR, MICRO)
 QUALIFIER = ''
 
@@ -294,7 +290,12 @@ class CleanCommand(Command):
 class CheckSDist(sdist):
     """Custom sdist that ensures Cython has compiled all pyx files to c."""
 
-    _pyxfiles = ['pandas/src/tseries.pyx'
+    _pyxfiles = ['pandas/lib.pyx',
+                 'pandas/hashtable.pyx',
+                 'pandas/tslib.pyx',
+                 'pandas/index.pyx',
+                 'pandas/algos.pyx',
+                 'pandas/src/parser.pyx',
                  'pandas/src/sparse.pyx']
 
     def initialize_options(self):
@@ -534,14 +535,15 @@ class DummyBuildSrc(Command):
         pass
 
 cmdclass = {'clean': CleanCommand,
-            'build': build}
+            'build': build,
+            'sdist': CheckSDist}
+
 if cython:
     suffix = '.pyx'
     cmdclass['build_ext'] = build_ext
     if BUILD_CACHE_DIR: # use the cache
         cmdclass['build_ext'] = CachingBuildExt
     cmdclass['cython'] = CythonCommand
-    cmdclass['sdist'] =  CheckSDist
 else:
     suffix = '.c'
     cmdclass['build_src'] = DummyBuildSrc
@@ -657,9 +659,6 @@ if suffix == '.pyx' and 'setuptools' in sys.modules:
 if _have_setuptools:
     setuptools_kwargs["test_suite"] = "nose.collector"
 
-options = {'bdist_wininst': {'user-access-control': 'auto'}}
-# options = {}
-
 write_version_py()
 setup(name=DISTNAME,
       version=FULLVERSION,
@@ -704,5 +703,4 @@ setup(name=DISTNAME,
       long_description=LONG_DESCRIPTION,
       classifiers=CLASSIFIERS,
       platforms='any',
-      options=options,
       **setuptools_kwargs)

@@ -45,7 +45,7 @@ before_install:
 install:
   - echo "Waldo2"
   - ci/install.sh
-  - ci/print_versions.py
+  - ci/print_versions.py # not including stats
 
 script:
   - echo "Waldo3"

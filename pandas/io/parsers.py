@@ -21,6 +21,8 @@ from pandas.util.decorators import Appender
 import pandas.lib as lib
 import pandas._parser as _parser
 from pandas.tseries.period import Period
+import json
+
 
 class DateConversionError(Exception):
     pass
@@ -35,23 +37,34 @@ filepath_or_buffer : string or file handle / StringIO. The string could be
     is expected. For instance, a local file could be
     file ://localhost/path/to/table.csv
 %s
+lineterminator : string (length 1), default None
+    Character to break file into lines. Only valid with C parser
+quotechar : string
+quoting : string
+skipinitialspace : boolean, default False
+    Skip spaces after delimiter
+escapechar : string
 compression : {'gzip', 'bz2', None}, default None
     For on-the-fly decompression of on-disk data
 dialect : string or csv.Dialect instance, default None
     If None defaults to Excel dialect. Ignored if sep longer than 1 char
     See csv.Dialect documentation for more details
-header : int, default 0
+header : int, default 0 if names parameter not specified, otherwise None
     Row to use for the column labels of the parsed DataFrame. Specify None if
     there is no header row.
 skiprows : list-like or integer
     Row numbers to skip (0-indexed) or number of rows to skip (int)
     at the start of the file
-index_col : int or sequence, default None
-    Column to use as the row labels of the DataFrame. If a sequence is
-    given, a MultiIndex is used.
+index_col : int or sequence or False, default None
+    Column to use as the row labels of the DataFrame. If a sequence is given, a
+    MultiIndex is used. If you have a malformed file with delimiters at the end
+    of each line, you might consider index_col=False to force pandas to _not_
+    use the first column as the index (row names)
 names : array-like
-    List of column names to use. If header=True, replace existing header,
-    otherwise this ignores the header=0 default
+    List of column names to use. If file contains no header row, then you
+    should explicitly pass header=None
+prefix : string or None (default)
+    Prefix to add to column numbers when no header, e.g 'X' for X0, X1, ...
 na_values : list-like or dict, default None
     Additional strings to recognize as NA/NaN. If dict passed, specific
     per-column NA values
@@ -80,6 +93,8 @@ thousands : str, default None
 comment : str, default None
     Indicates remainder of line should not be parsed
     Does not support line commenting (will return empty line)
+decimal : str, default '.'
+    Character to recognize as decimal point. E.g. use ',' for European data
 nrows : int, default None
     Number of rows of file to read. Useful for reading pieces of large files
 iterator : boolean, default False
@@ -199,10 +214,12 @@ _parser_defaults = {
     'quotechar': '"',
     'quoting': csv.QUOTE_MINIMAL,
     'skipinitialspace': False,
+    'lineterminator': None,
 
-    'header': 0,
+    'header': 'infer',
     'index_col': None,
     'names': None,
+    'prefix': None,
     'skiprows': None,
     'na_values': None,
     'true_values': None,
@@ -225,7 +242,8 @@ _parser_defaults = {
     'chunksize': None,
     'verbose': False,
     'encoding': None,
-    'squeeze': False
+    'squeeze': False,
+    'compression': None
 }
 
 
@@ -243,7 +261,7 @@ _c_parser_defaults = {
     'factorize': True,
     'dtype': None,
     'usecols': None,
-    'compression': None
+    'decimal': b'.'
 }
 
 _fwf_defaults = {
@@ -267,10 +285,12 @@ def _make_parser_function(name, sep=','):
                  quotechar='"',
                  quoting=csv.QUOTE_MINIMAL,
                  skipinitialspace=False,
+                 lineterminator=None,
 
-                 header=0,
+                 header='infer',
                  index_col=None,
                  names=None,
+                 prefix=None,
                  skiprows=None,
                  skipfooter=None,
                  skip_footer=0,
@@ -296,6 +316,7 @@ def _make_parser_function(name, sep=','):
                  keep_default_na=True,
                  thousands=None,
                  comment=None,
+                 decimal=b'.',
 
                  parse_dates=False,
                  keep_date_col=False,
@@ -325,10 +346,12 @@ def _make_parser_function(name, sep=','):
                     quotechar=quotechar,
                     quoting=quoting,
                     skipinitialspace=skipinitialspace,
+                    lineterminator=lineterminator,
 
                     header=header,
                     index_col=index_col,
                     names=names,
+                    prefix=prefix,
                     skiprows=skiprows,
                     na_values=na_values,
                     true_values=true_values,
@@ -336,6 +359,7 @@ def _make_parser_function(name, sep=','):
                     keep_default_na=keep_default_na,
                     thousands=thousands,
                     comment=comment,
+                    decimal=decimal,
 
                     parse_dates=parse_dates,
                     keep_date_col=keep_date_col,
@@ -454,6 +478,9 @@ class TextFileReader(object):
             kwds['quotechar'] = dialect.quotechar
             kwds['quoting'] = dialect.quoting
 
+        if kwds.get('header', 'infer') == 'infer':
+            kwds['header'] = 0 if kwds.get('names') is None else None
+
         self.orig_options = kwds
 
         # miscellanea
@@ -534,7 +561,7 @@ class TextFileReader(object):
         # really delete this one
         keep_default_na = result.pop('keep_default_na')
 
-        if index_col is not None:
+        if _is_index_col(index_col):
             if not isinstance(index_col, (list, tuple, np.ndarray)):
                 index_col = [index_col]
         result['index_col'] = index_col
@@ -617,12 +644,15 @@ class TextFileReader(object):
     get_chunk = read
 
 
+def _is_index_col(col):
+    return col is not None and col is not False
 
 class ParserBase(object):
 
     def __init__(self, kwds):
         self.names = kwds.get('names')
         self.orig_names = None
+        self.prefix = kwds.pop('prefix', None)
 
         self.index_col = kwds.pop('index_col', None)
         self.index_names = None
@@ -661,7 +691,7 @@ class ParserBase(object):
                 return (j in self.parse_dates) or (name in self.parse_dates)
 
     def _make_index(self, data, alldata, columns):
-        if self.index_col is None or len(self.index_col) == 0:
+        if not _is_index_col(self.index_col) or len(self.index_col) == 0:
             index = None
 
         elif not self._has_complex_date_col:
@@ -838,7 +868,6 @@ class CParserWrapper(ParserBase):
         kwds = kwds.copy()
 
         self.as_recarray = kwds.get('as_recarray', False)
-
         ParserBase.__init__(self, kwds)
 
         if 'utf-16' in (kwds.get('encoding') or ''):
@@ -847,10 +876,14 @@ class CParserWrapper(ParserBase):
             src = com.UTF8Recoder(src, kwds['encoding'])
             kwds['encoding'] = 'utf-8'
 
+        # #2442
+        kwds['allow_leading_cols'] = self.index_col is not False
         self._reader = _parser.TextReader(src, **kwds)
 
         # XXX
         self.usecols = self._reader.usecols
+
+        passed_names = self.names is None
 
         if self._reader.header is None:
             self.names = None
@@ -858,8 +891,11 @@ class CParserWrapper(ParserBase):
             self.names = list(self._reader.header)
 
         if self.names is None:
-            self.names = ['X%d' % i
-                          for i in range(self._reader.table_width)]
+            if self.prefix:
+                self.names = ['X%d' % i
+                              for i in range(self._reader.table_width)]
+            else:
+                self.names = range(self._reader.table_width)
 
         # XXX
         self._set_noconvert_columns()
@@ -867,11 +903,16 @@ class CParserWrapper(ParserBase):
         self.orig_names = self.names
 
         if not self._has_complex_date_col:
-            if self._reader.leading_cols == 0 and self.index_col is not None:
+            if (self._reader.leading_cols == 0 and
+                _is_index_col(self.index_col)):
+
                 self._name_processed = True
                 (self.index_names, self.names,
                  self.index_col) = _clean_index_names(self.names,
                                                       self.index_col)
+
+            if self._reader.header is None and not passed_names:
+                self.index_names = [None] * len(self.index_names)
 
         self._implicit_index = self._reader.leading_cols > 0
 
@@ -1061,6 +1102,7 @@ class PythonParser(ParserBase):
 
         self.header = kwds['header']
         self.encoding = kwds['encoding']
+        self.compression = kwds['compression']
         self.skiprows = kwds['skiprows']
 
         self.skip_footer = kwds['skip_footer']
@@ -1070,7 +1112,9 @@ class PythonParser(ParserBase):
         self.escapechar = kwds['escapechar']
         self.doublequote = kwds['doublequote']
         self.skipinitialspace = kwds['skipinitialspace']
+        self.lineterminator = kwds['lineterminator']
         self.quoting = kwds['quoting']
+
         self.has_index_names = False
         if 'has_index_names' in kwds:
             self.has_index_names = kwds['has_index_names']
@@ -1084,13 +1128,8 @@ class PythonParser(ParserBase):
 
 
         if isinstance(f, basestring):
-            f = com._get_handle(f, 'r', encoding=self.encoding)
-
-            # if self.encoding is None:
-            #     # universal newline mode
-            #     f = com._get_handle(f, 'U')
-            # else:
-            #     f = com._get_handle(f, 'rb', encoding=self.encoding)
+            f = com._get_handle(f, 'r', encoding=self.encoding,
+                                compression=self.compression)
 
         if hasattr(f, 'readline'):
             self._make_reader(f)
@@ -1114,6 +1153,10 @@ class PythonParser(ParserBase):
         sep = self.delimiter
 
         if sep is None or len(sep) == 1:
+            if self.lineterminator:
+                raise ValueError('Custom line terminators not supported in '
+                                 'python parser (yet)')
+
             class MyDialect(csv.Dialect):
                 delimiter = self.delimiter
                 quotechar = self.quotechar
@@ -1160,7 +1203,18 @@ class PythonParser(ParserBase):
                                     strict=True)
 
         else:
-            reader = (re.split(sep, line.strip()) for line in f)
+            def _read():
+                line = next(f)
+                pat = re.compile(sep)
+                if (py3compat.PY3 and isinstance(line, bytes)):
+                    yield pat.split(line.decode('utf-8').strip())
+                    for line in f:
+                        yield pat.split(line.decode('utf-8').strip())
+                else:
+                    yield pat.split(line.strip())
+                    for line in f:
+                        yield pat.split(line.strip())
+            reader = _read()
 
         self.data = reader
 
@@ -1259,7 +1313,10 @@ class PythonParser(ParserBase):
 
             ncols = len(line)
             if not names:
-                columns = ['X%d' % i for i in range(ncols)]
+                if self.prefix:
+                    columns = ['X%d' % i for i in range(ncols)]
+                else:
+                    columns = range(ncols)
             else:
                 columns = names
 
@@ -1348,7 +1405,10 @@ class PythonParser(ParserBase):
         # implicitly index_col=0 b/c 1 fewer column names
         implicit_first_cols = 0
         if line is not None:
-            implicit_first_cols = len(line) - len(columns)
+            # leave it 0, #2442
+            if self.index_col is not False:
+                implicit_first_cols = len(line) - len(columns)
+
             if next_line is not None:
                 if len(next_line) == len(line) + len(columns):
                     # column and index names on diff rows
@@ -1385,7 +1445,7 @@ class PythonParser(ParserBase):
 
         assert(self.skip_footer >= 0)
 
-        if col_len != zip_len:
+        if col_len != zip_len and self.index_col is not False:
             row_num = -1
             i = 0
             for (i, l) in enumerate(content):
@@ -1545,11 +1605,13 @@ def _try_convert_dates(parser, colspec, data_dict, columns):
 
     for c in colspec:
         if c in colset:
-            colnames.append(str(c))
-        elif isinstance(c, int):
+            colnames.append(c)
+        elif isinstance(c, int) and c not in columns:
             colnames.append(str(columns[c]))
+        else:
+            colnames.append(c)
 
-    new_name = '_'.join(colnames)
+    new_name = '_'.join([str(x) for x in colnames])
     to_parse = [data_dict[c] for c in colnames if c in data_dict]
 
     try:
@@ -1578,7 +1640,7 @@ def _clean_na_values(na_values, keep_default_na=True):
 
 
 def _clean_index_names(columns, index_col):
-    if index_col is None:
+    if not _is_index_col(index_col):
         return None, columns, index_col
 
     columns = list(columns)
@@ -1603,7 +1665,7 @@ def _clean_index_names(columns, index_col):
             index_names.append(name)
 
     # hack
-    if index_names[0] is not None and 'Unnamed' in index_names[0]:
+    if isinstance(index_names[0], basestring) and 'Unnamed' in index_names[0]:
         index_names[0] = None
 
     return index_names, columns, index_col
@@ -1750,7 +1812,7 @@ class ExcelFile(object):
         return object.__repr__(self)
 
     def parse(self, sheetname, header=0, skiprows=None, skip_footer=0,
-              index_col=None, has_index_names=False, parse_cols=None, parse_dates=False,
+              index_col=None, parse_cols=None, parse_dates=False,
               date_parser=None, na_values=None, thousands=None, chunksize=None,
               **kwds):
         """
@@ -1769,9 +1831,6 @@ class ExcelFile(object):
         index_col : int, default None
             Column to use as the row labels of the DataFrame. Pass None if
             there is no such column
-        has_index_names: boolean, default False
-            True if the cols defined in index_col have an index name and are
-            not in the header
         parse_cols : int or list, default None
             If None then parse all columns,
             If int then indicates last column to be parsed
@@ -1785,6 +1844,12 @@ class ExcelFile(object):
         -------
         parsed : DataFrame
         """
+
+        # has_index_names: boolean, default False
+        #     True if the cols defined in index_col have an index name and are
+        #     not in the header
+        has_index_names=False # removed as new argument of API function
+
         skipfooter = kwds.pop('skipfooter', None)
         if skipfooter is not None:
             skip_footer = skipfooter
@@ -1938,7 +2003,7 @@ class CellStyleConverter(object):
     """
 
     @staticmethod
-    def to_xls(style_dict):
+    def to_xls(style_dict, num_format_str=None):
         """
         converts a style_dict to an xlwt style object
         Parameters
@@ -1980,9 +2045,13 @@ class CellStyleConverter(object):
 
         if style_dict:
             xlwt_stylestr = style_to_xlwt(style_dict)
-            return xlwt.easyxf(xlwt_stylestr, field_sep=',', line_sep=';')
+            style = xlwt.easyxf(xlwt_stylestr, field_sep=',', line_sep=';')
         else:
-            return xlwt.XFStyle()
+            style = xlwt.XFStyle()
+        if num_format_str is not None:
+            style.num_format_str = num_format_str
+
+        return style
 
     @staticmethod
     def to_xlsx(style_dict):
@@ -2120,13 +2189,26 @@ class ExcelWriter(object):
             wks = self.book.add_sheet(sheet_name)
             self.sheets[sheet_name] = wks
 
+        style_dict = {}
+
         for cell in cells:
             val = _conv_value(cell.val)
-            style = CellStyleConverter.to_xls(cell.style)
-            if isinstance(val, datetime.datetime):
-                style.num_format_str = "YYYY-MM-DD HH:MM:SS"
-            elif isinstance(val, datetime.date):
-                style.num_format_str = "YYYY-MM-DD"
+
+            num_format_str = None
+            if isinstance(cell.val, datetime.datetime):
+                num_format_str = "YYYY-MM-DD HH:MM:SS"
+            if isinstance(cell.val, datetime.date):
+                num_format_str = "YYYY-MM-DD"
+
+            stylekey = json.dumps(cell.style)
+            if num_format_str:
+                stylekey += num_format_str
+
+            if stylekey in style_dict:
+                style = style_dict[stylekey]
+            else:
+                style = CellStyleConverter.to_xls(cell.style, num_format_str)
+                style_dict[stylekey] = style
 
             if cell.mergestart is not None and cell.mergeend is not None:
                 wks.write_merge(startrow + cell.row,
