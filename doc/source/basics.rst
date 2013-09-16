@@ -5,6 +5,7 @@
    :suppress:
 
    import numpy as np
+   import re
    from pandas import *
    randn = np.random.randn
    np.set_printoptions(precision=4, suppress=True)
@@ -1010,6 +1011,21 @@ and optional groups like
    Series(['a1', 'b2', '3']).str.match('(?P<letter>[ab])?(?P<digit>\d)')
 
 can also be used.
+
+N.B. The subtle (strange) behavior of ``re.findall`` with ``+`` and ``*`` 
+illustrated here:
+
+.. ipython:: python
+
+   re.findall('(a)(b|c)', 'abc')
+   re.findall('(a)(b|c)*', 'abc')
+
+also appears in ``extract``:
+
+.. ipython:: python
+
+   Series(['abc']).str.extract('(a)(b|c)')
+   Series(['abc']).str.extract('(a)(b|c)*')
 
 Methods like ``contains``, ``startswith``, and ``endswith`` takes an extra
 ``na`` arguement so missing values can be considered True or False:
