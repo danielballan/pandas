@@ -753,6 +753,7 @@ class MPLPlot(object):
                  sharey=False, use_index=True,
                  figsize=None, grid=None, legend=True, rot=None,
                  ax=None, fig=None, title=None, xlim=None, ylim=None,
+                 xerr=None, yerr=None,
                  xticks=None, yticks=None,
                  sort_columns=False, fontsize=None,
                  secondary_y=False, colormap=None, **kwds):
