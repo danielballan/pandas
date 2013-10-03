@@ -6,8 +6,8 @@ Data structure for 1-dimensional cross-sectional and time series data
 # pylint: disable=W0703,W0622,W0613,W0201
 
 import operator
-from distutils.version import LooseVersion
 import types
+import warnings
 
 from numpy import nan, ndarray
 import numpy as np
@@ -21,7 +21,8 @@ from pandas.core.common import (isnull, notnull, _is_bool_indexer,
                                 _values_from_object,
                                 _possibly_cast_to_datetime, _possibly_castable,
                                 _possibly_convert_platform,
-                                ABCSparseArray)
+                                ABCSparseArray, _maybe_match_name, _ensure_object)
+
 from pandas.core.index import (Index, MultiIndex, InvalidIndexError,
                                _ensure_index, _handle_legacy_indexes)
 from pandas.core.indexing import (
@@ -32,13 +33,12 @@ from pandas.core.internals import SingleBlockManager
 from pandas.core.categorical import Categorical
 from pandas.tseries.index import DatetimeIndex
 from pandas.tseries.period import PeriodIndex, Period
-from pandas.tseries.offsets import DateOffset
-from pandas.tseries.timedeltas import _possibly_cast_to_timedelta
 from pandas import compat
 from pandas.util.terminal import get_terminal_size
 from pandas.compat import zip, lzip, u, OrderedDict
 
 import pandas.core.array as pa
+import pandas.core.ops as ops
 
 import pandas.core.common as com
 import pandas.core.datetools as datetools
@@ -55,381 +55,11 @@ from pandas.core.config import get_option
 
 __all__ = ['Series']
 
-_np_version = np.version.short_version
-_np_version_under1p6 = LooseVersion(_np_version) < '1.6'
-_np_version_under1p7 = LooseVersion(_np_version) < '1.7'
-
-class _TimeOp(object):
-    """
-    Wrapper around Series datetime/time/timedelta arithmetic operations.
-    Generally, you should use classmethod ``maybe_convert_for_time_op`` as an
-    entry point.
-    """
-    fill_value = tslib.iNaT
-    wrap_results = staticmethod(lambda x: x)
-    dtype = None
-
-    def __init__(self, left, right, name):
-        self.name = name
-
-        lvalues = self._convert_to_array(left, name=name)
-        rvalues = self._convert_to_array(right, name=name)
-
-        self.is_timedelta_lhs = com.is_timedelta64_dtype(left)
-        self.is_datetime_lhs  = com.is_datetime64_dtype(left)
-        self.is_integer_lhs = left.dtype.kind in ['i','u']
-        self.is_datetime_rhs  = com.is_datetime64_dtype(rvalues)
-        self.is_timedelta_rhs = com.is_timedelta64_dtype(rvalues) or (not self.is_datetime_rhs and _np_version_under1p7)
-        self.is_integer_rhs = rvalues.dtype.kind in ('i','u')
-
-        self._validate()
-
-        self._convert_for_datetime(lvalues, rvalues)
-
-    def _validate(self):
-        # timedelta and integer mul/div
-
-        if (self.is_timedelta_lhs and self.is_integer_rhs) or\
-           (self.is_integer_lhs and self.is_timedelta_rhs):
-
-            if self.name not in ('__truediv__','__div__','__mul__'):
-                raise TypeError("can only operate on a timedelta and an integer for "
-                                "division, but the operator [%s] was passed" % self.name)
-
-        # 2 datetimes
-        elif self.is_datetime_lhs and self.is_datetime_rhs:
-            if self.name != '__sub__':
-                raise TypeError("can only operate on a datetimes for subtraction, "
-                                "but the operator [%s] was passed" % self.name)
-
-
-        # 2 timedeltas
-        elif self.is_timedelta_lhs and self.is_timedelta_rhs:
-
-            if self.name not in ('__div__', '__truediv__', '__add__', '__sub__'):
-                raise TypeError("can only operate on a timedeltas for "
-                                "addition, subtraction, and division, but the operator [%s] was passed" % self.name)
-
-        # datetime and timedelta
-        elif self.is_datetime_lhs and self.is_timedelta_rhs:
-
-            if self.name not in ('__add__','__sub__'):
-                raise TypeError("can only operate on a datetime with a rhs of a timedelta for "
-                                "addition and subtraction, but the operator [%s] was passed" % self.name)
-
-        elif self.is_timedelta_lhs and self.is_datetime_rhs:
-
-            if self.name != '__add__':
-                raise TypeError("can only operate on a timedelta and a datetime for "
-                                "addition, but the operator [%s] was passed" % self.name)
-        else:
-            raise TypeError('cannot operate on a series with out a rhs '
-                            'of a series/ndarray of type datetime64[ns] '
-                            'or a timedelta')
-
-    def _convert_to_array(self, values, name=None):
-        """converts values to ndarray"""
-        coerce = 'compat' if _np_version_under1p7 else True
-        if not is_list_like(values):
-            values = np.array([values])
-        inferred_type = lib.infer_dtype(values)
-        if inferred_type in ('datetime64','datetime','date','time'):
-            # a datetlike
-            if not (isinstance(values, (pa.Array, Series)) and com.is_datetime64_dtype(values)):
-                values = tslib.array_to_datetime(values)
-            elif isinstance(values, DatetimeIndex):
-                values = values.to_series()
-        elif inferred_type in ('timedelta', 'timedelta64'):
-            # have a timedelta, convert to to ns here
-            values = _possibly_cast_to_timedelta(values, coerce=coerce)
-        elif inferred_type == 'integer':
-            # py3 compat where dtype is 'm' but is an integer
-            if values.dtype.kind == 'm':
-                values = values.astype('timedelta64[ns]')
-            elif isinstance(values, PeriodIndex):
-                values = values.to_timestamp().to_series()
-            elif name not in ('__truediv__','__div__','__mul__'):
-                raise TypeError("incompatible type for a datetime/timedelta "
-                                "operation [{0}]".format(name))
-        elif isinstance(values[0],DateOffset):
-            # handle DateOffsets
-            os = pa.array([ getattr(v,'delta',None) for v in values ])
-            mask = isnull(os)
-            if mask.any():
-                raise TypeError("cannot use a non-absolute DateOffset in "
-                                "datetime/timedelta operations [{0}]".format(
-                                    ','.join([ com.pprint_thing(v) for v in values[mask] ])))
-            values = _possibly_cast_to_timedelta(os, coerce=coerce)
-        else:
-            raise TypeError("incompatible type [{0}] for a datetime/timedelta operation".format(pa.array(values).dtype))
-
-        return values
-
-    def _convert_for_datetime(self, lvalues, rvalues):
-        mask = None
-        # datetimes require views
-        if self.is_datetime_lhs or self.is_datetime_rhs:
-            # datetime subtraction means timedelta
-            if self.is_datetime_lhs and self.is_datetime_rhs:
-                self.dtype = 'timedelta64[ns]'
-            else:
-                self.dtype = 'datetime64[ns]'
-            mask = isnull(lvalues) | isnull(rvalues)
-            lvalues = lvalues.view(np.int64)
-            rvalues = rvalues.view(np.int64)
-
-        # otherwise it's a timedelta
-        else:
-            self.dtype = 'timedelta64[ns]'
-            mask = isnull(lvalues) | isnull(rvalues)
-            lvalues = lvalues.astype(np.int64)
-            rvalues = rvalues.astype(np.int64)
-
-            # time delta division -> unit less
-            # integer gets converted to timedelta in np < 1.6
-            if (self.is_timedelta_lhs and self.is_timedelta_rhs) and\
-               not self.is_integer_rhs and\
-               not self.is_integer_lhs and\
-               self.name in ('__div__', '__truediv__'):
-                self.dtype = 'float64'
-                self.fill_value = np.nan
-                lvalues = lvalues.astype(np.float64)
-                rvalues = rvalues.astype(np.float64)
-
-        # if we need to mask the results
-        if mask is not None:
-            if mask.any():
-                def f(x):
-                    x = pa.array(x,dtype=self.dtype)
-                    np.putmask(x,mask,self.fill_value)
-                    return x
-                self.wrap_results = f
-        self.lvalues = lvalues
-        self.rvalues = rvalues
-
-    @classmethod
-    def maybe_convert_for_time_op(cls, left, right, name):
-        """
-        if ``left`` and ``right`` are appropriate for datetime arithmetic with
-        operation ``name``, processes them and returns a ``_TimeOp`` object
-        that stores all the required values.  Otherwise, it will generate
-        either a ``NotImplementedError`` or ``None``, indicating that the
-        operation is unsupported for datetimes (e.g., an unsupported r_op) or
-        that the data is not the right type for time ops.
-        """
-        # decide if we can do it
-        is_timedelta_lhs = com.is_timedelta64_dtype(left)
-        is_datetime_lhs  = com.is_datetime64_dtype(left)
-        if not (is_datetime_lhs or is_timedelta_lhs):
-            return None
-        # rops currently disabled
-        if name.startswith('__r'):
-            return NotImplemented
-
-        return cls(left, right, name)
-
-#----------------------------------------------------------------------
-# Wrapper function for Series arithmetic methods
-
-def _arith_method(op, name, fill_zeros=None):
-    """
-    Wrapper function for Series arithmetic operations, to avoid
-    code duplication.
-    """
-    def na_op(x, y):
-        try:
-
-            result = op(x, y)
-            result = com._fill_zeros(result, y, fill_zeros)
-
-        except TypeError:
-            result = pa.empty(len(x), dtype=x.dtype)
-            if isinstance(y, (pa.Array, Series)):
-                mask = notnull(x) & notnull(y)
-                result[mask] = op(x[mask], y[mask])
-            else:
-                mask = notnull(x)
-                result[mask] = op(x[mask], y)
-
-            result, changed = com._maybe_upcast_putmask(result, -mask, pa.NA)
-
-        return result
-
-    def wrapper(left, right, name=name):
-        from pandas.core.frame import DataFrame
-
-        time_converted = _TimeOp.maybe_convert_for_time_op(left, right, name)
-
-        if time_converted is None:
-            lvalues, rvalues = left, right
-            dtype = None
-            wrap_results = lambda x: x
-        elif time_converted == NotImplemented:
-            return NotImplemented
-        else:
-            lvalues = time_converted.lvalues
-            rvalues = time_converted.rvalues
-            dtype = time_converted.dtype
-            wrap_results = time_converted.wrap_results
-
-        if isinstance(rvalues, Series):
-
-            join_idx, lidx, ridx = left.index.join(rvalues.index, how='outer',
-                                                   return_indexers=True)
-            rindex = rvalues.index
-            name = _maybe_match_name(left, rvalues)
-            lvalues = getattr(lvalues, 'values', lvalues)
-            rvalues = getattr(rvalues, 'values', rvalues)
-            if left.index.equals(rindex):
-                index = left.index
-            else:
-                index = join_idx
-
-                if lidx is not None:
-                    lvalues = com.take_1d(lvalues, lidx)
-
-                if ridx is not None:
-                    rvalues = com.take_1d(rvalues, ridx)
-
-            arr = na_op(lvalues, rvalues)
-
-            return left._constructor(wrap_results(arr), index=index,
-                                     name=name, dtype=dtype)
-        elif isinstance(right, DataFrame):
-            return NotImplemented
-        else:
-            # scalars
-            if hasattr(lvalues, 'values'):
-                lvalues = lvalues.values
-            return left._constructor(wrap_results(na_op(lvalues, rvalues)),
-                                     index=left.index, name=left.name, dtype=dtype)
-    return wrapper
-
-
-def _comp_method(op, name, masker=False):
-    """
-    Wrapper function for Series arithmetic operations, to avoid
-    code duplication.
-    """
-    def na_op(x, y):
-        if x.dtype == np.object_:
-            if isinstance(y, list):
-                y = lib.list_to_object_array(y)
-
-            if isinstance(y, (pa.Array, Series)):
-                if y.dtype != np.object_:
-                    result = lib.vec_compare(x, y.astype(np.object_), op)
-                else:
-                    result = lib.vec_compare(x, y, op)
-            else:
-                result = lib.scalar_compare(x, y, op)
-        else:
-            result = op(x, y)
-
-        return result
-
-    def wrapper(self, other):
-        from pandas.core.frame import DataFrame
-
-        if isinstance(other, Series):
-            name = _maybe_match_name(self, other)
-            if len(self) != len(other):
-                raise ValueError('Series lengths must match to compare')
-            return self._constructor(na_op(self.values, other.values),
-                                     index=self.index, name=name)
-        elif isinstance(other, DataFrame):  # pragma: no cover
-            return NotImplemented
-        elif isinstance(other, (pa.Array, Series)):
-            if len(self) != len(other):
-                raise ValueError('Lengths must match to compare')
-            return self._constructor(na_op(self.values, np.asarray(other)),
-                                     index=self.index, name=self.name)
-        else:
-
-            mask = isnull(self)
-
-            values = self.values
-            other = _index.convert_scalar(values, other)
-
-            if issubclass(values.dtype.type, np.datetime64):
-                values = values.view('i8')
-
-            # scalars
-            res = na_op(values, other)
-            if np.isscalar(res):
-                raise TypeError('Could not compare %s type with Series'
-                                % type(other))
-
-            # always return a full value series here
-            res = _values_from_object(res)
-
-            res = Series(res, index=self.index, name=self.name, dtype='bool')
-
-            # mask out the invalids
-            if mask.any():
-                res[mask.values] = masker
-
-            return res
-    return wrapper
-
-
-def _bool_method(op, name):
-    """
-    Wrapper function for Series arithmetic operations, to avoid
-    code duplication.
-    """
-    def na_op(x, y):
-        try:
-            result = op(x, y)
-        except TypeError:
-            if isinstance(y, list):
-                y = lib.list_to_object_array(y)
-
-            if isinstance(y, (pa.Array, Series)):
-                if (x.dtype == np.bool_ and
-                        y.dtype == np.bool_):  # pragma: no cover
-                    result = op(x, y)  # when would this be hit?
-                else:
-                    x = com._ensure_object(x)
-                    y = com._ensure_object(y)
-                    result = lib.vec_binop(x, y, op)
-            else:
-                result = lib.scalar_binop(x, y, op)
-
-        return result
-
-    def wrapper(self, other):
-        from pandas.core.frame import DataFrame
-
-        if isinstance(other, Series):
-            name = _maybe_match_name(self, other)
-            return self._constructor(na_op(self.values, other.values),
-                                     index=self.index, name=name)
-        elif isinstance(other, DataFrame):
-            return NotImplemented
-        else:
-            # scalars
-            return self._constructor(na_op(self.values, other),
-                                     index=self.index, name=self.name)
-    return wrapper
-
-
-def _radd_compat(left, right):
-    radd = lambda x, y: y + x
-    # GH #353, NumPy 1.5.1 workaround
-    try:
-        output = radd(left, right)
-    except TypeError:
-        cond = (_np_version_under1p6 and
-                left.dtype == np.object_)
-        if cond:  # pragma: no cover
-            output = np.empty_like(left)
-            output.flat[:] = [radd(x, right) for x in left.flat]
-        else:
-            raise
-
-    return output
-
+_shared_doc_kwargs = dict(
+    axes='index',
+    klass='Series',
+    axes_single_arg="{0,'index'}"
+)
 
 def _coerce_method(converter):
     """ install the scalar coercion methods """
@@ -442,50 +72,6 @@ def _coerce_method(converter):
     return wrapper
 
 
-def _maybe_match_name(a, b):
-    name = None
-    if a.name == b.name:
-        name = a.name
-    return name
-
-
-def _flex_method(op, name):
-    doc = """
-    Binary operator %s with support to substitute a fill_value for missing data
-    in one of the inputs
-
-    Parameters
-    ----------
-    other: Series or scalar value
-    fill_value : None or float value, default None (NaN)
-        Fill missing (NaN) values with this value. If both Series are
-        missing, the result will be missing
-    level : int or name
-        Broadcast across a level, matching Index values on the
-        passed MultiIndex level
-
-    Returns
-    -------
-    result : Series
-    """ % name
-
-    @Appender(doc)
-    def f(self, other, level=None, fill_value=None):
-        if isinstance(other, Series):
-            return self._binop(other, op, level=level, fill_value=fill_value)
-        elif isinstance(other, (pa.Array, Series, list, tuple)):
-            if len(other) != len(self):
-                raise ValueError('Lengths must be equal')
-            return self._binop(self._constructor(other, self.index), op,
-                               level=level, fill_value=fill_value)
-        else:
-            return self._constructor(op(self.values, other), self.index,
-                                     name=self.name)
-
-    f.__name__ = name
-    return f
-
-
 def _unbox(func):
     @Appender(func.__doc__)
     def f(self, *args, **kwargs):
@@ -496,40 +82,6 @@ def _unbox(func):
         else:  # pragma: no cover
             return result
     f.__name__ = func.__name__
-    return f
-
-_stat_doc = """
-Return %(name)s of values
-%(na_action)s
-
-Parameters
-----------
-skipna : boolean, default True
-    Exclude NA/null values
-level : int, default None
-    If the axis is a MultiIndex (hierarchical), count along a
-    particular level, collapsing into a smaller Series
-%(extras)s
-Returns
--------
-%(shortname)s : float (or Series if level specified)
-"""
-_doc_exclude_na = "NA/null values are excluded"
-_doc_ndarray_interface = ("Extra parameters are to preserve ndarray"
-                          "interface.\n")
-
-
-def _make_stat_func(nanop, name, shortname, na_action=_doc_exclude_na,
-                    extras=_doc_ndarray_interface):
-
-    @Substitution(name=name, shortname=shortname,
-                  na_action=na_action, extras=extras)
-    @Appender(_stat_doc)
-    def f(self, axis=0, dtype=None, out=None, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level(shortname, level=level, skipna=skipna)
-        return nanop(_values_from_object(self), skipna=skipna)
-    f.__name__ = shortname
     return f
 
 #----------------------------------------------------------------------
@@ -590,6 +142,12 @@ class Series(generic.NDFrame):
 
             if isinstance(data, MultiIndex):
                 raise NotImplementedError
+            elif isinstance(data, Index):
+                # need to copy to avoid aliasing issues
+                if name is None:
+                    name = data.name
+                data = data.values
+                copy = True
             elif isinstance(data, pa.Array):
                 pass
             elif isinstance(data, Series):
@@ -895,7 +453,8 @@ class Series(generic.NDFrame):
             raise
         except:
             if isinstance(i, slice):
-                return self[i]
+                indexer = self.index._convert_slice_indexer(i,typ='iloc')
+                return self._get_values(indexer)
             else:
                 label = self.index[i]
                 if isinstance(label, Index):
@@ -908,10 +467,10 @@ class Series(generic.NDFrame):
     def _is_mixed_type(self):
         return False
 
-    def _slice(self, slobj, axis=0, raise_on_error=False):
+    def _slice(self, slobj, axis=0, raise_on_error=False, typ=None):
         if raise_on_error:
             _check_slice_bounds(slobj, self.values)
-
+        slobj = self.index._convert_slice_indexer(slobj,typ=typ or 'getitem')
         return self._constructor(self.values[slobj], index=self.index[slobj],
                                  name=self.name)
 
@@ -929,7 +488,13 @@ class Series(generic.NDFrame):
             elif _is_bool_indexer(key):
                 pass
             else:
+
+                # we can try to coerce the indexer (or this will raise)
+                new_key = self.index._convert_scalar_indexer(key)
+                if type(new_key) != type(key):
+                    return self.__getitem__(new_key)
                 raise
+
         except Exception:
             raise
 
@@ -944,14 +509,7 @@ class Series(generic.NDFrame):
     def _get_with(self, key):
         # other: fancy integer or otherwise
         if isinstance(key, slice):
-
-            idx_type = self.index.inferred_type
-            if idx_type == 'floating':
-                indexer = self.ix._convert_to_indexer(key, axis=0)
-            elif idx_type == 'integer' or _is_index_slice(key):
-                indexer = key
-            else:
-                indexer = self.ix._convert_to_indexer(key, axis=0)
+            indexer = self.index._convert_slice_indexer(key,typ='getitem')
             return self._get_values(indexer)
         else:
             if isinstance(key, tuple):
@@ -974,7 +532,7 @@ class Series(generic.NDFrame):
                 key_type = lib.infer_dtype(key)
 
             if key_type == 'integer':
-                if self.index.inferred_type == 'integer':
+                if self.index.is_integer() or self.index.is_floating():
                     return self.reindex(key)
                 else:
                     return self._get_values(key)
@@ -1047,10 +605,10 @@ class Series(generic.NDFrame):
         except TypeError as e:
             if isinstance(key, tuple) and not isinstance(self.index, MultiIndex):
                 raise ValueError("Can only tuple-index with a MultiIndex")
+
             # python 3 type errors should be raised
             if 'unorderable' in str(e):  # pragma: no cover
                 raise IndexError(key)
-            # Could not hash item
 
         if _is_bool_indexer(key):
             key = _check_bool_indexer(self.index, key)
@@ -1074,10 +632,7 @@ class Series(generic.NDFrame):
     def _set_with(self, key, value):
         # other: fancy integer or otherwise
         if isinstance(key, slice):
-            if self.index.inferred_type == 'integer' or _is_index_slice(key):
-                indexer = key
-            else:
-                indexer = self.ix._convert_to_indexer(key, axis=0)
+            indexer = self.index._convert_slice_indexer(key,typ='getitem')
             return self._set_values(indexer, value)
         else:
             if isinstance(key, tuple):
@@ -1149,18 +704,21 @@ class Series(generic.NDFrame):
         new_values = self.values.repeat(reps)
         return self._constructor(new_values, index=new_index, name=self.name)
 
-    def reshape(self, newshape, order='C'):
+    def reshape(self, *args, **kwargs):
         """
         See numpy.ndarray.reshape
         """
-        if order not in ['C', 'F']:
-            raise TypeError(
-                "must specify a tuple / singular length to reshape")
-
-        if isinstance(newshape, tuple) and len(newshape) > 1:
-            return self.values.reshape(newshape, order=order)
+        if len(args) == 1 and hasattr(args[0], '__iter__'):
+            shape = args[0]
         else:
-            return ndarray.reshape(self, newshape, order)
+            shape = args
+
+        if tuple(shape) == self.shape:
+            # XXX ignoring the "order" keyword.
+            return self
+
+        return self.values.reshape(shape, **kwargs)
+
 
     def get(self, label, default=None):
         """
@@ -1296,9 +854,6 @@ class Series(generic.NDFrame):
                                     dtype=True)
         else:
             result = u('Series([], dtype: %s)') % self.dtype
-
-        if not (isinstance(result, compat.text_type)):
-            raise AssertionError()
         return result
 
     def _tidy_repr(self, max_vals=20):
@@ -1365,7 +920,6 @@ class Series(generic.NDFrame):
         """
 
         if nanRep is not None:  # pragma: no cover
-            import warnings
             warnings.warn("nanRep is deprecated, use na_rep", FutureWarning)
             na_rep = nanRep
 
@@ -1374,7 +928,9 @@ class Series(generic.NDFrame):
 
         # catch contract violations
         if not isinstance(the_repr, compat.text_type):
-            raise AssertionError("expected unicode string")
+            raise AssertionError("result must be of type unicode, type"
+                                 " of result is {0!r}"
+                                 "".format(the_repr.__class__.__name__))
 
         if buf is None:
             return the_repr
@@ -1394,11 +950,16 @@ class Series(generic.NDFrame):
         """
 
         formatter = fmt.SeriesFormatter(self, name=name, header=print_header,
-                                        length=length, dtype=dtype, na_rep=na_rep,
+                                        length=length, dtype=dtype,
+                                        na_rep=na_rep,
                                         float_format=float_format)
         result = formatter.to_string()
-        if not (isinstance(result, compat.text_type)):
-            raise AssertionError()
+
+        # TODO: following check prob. not neces.
+        if not isinstance(result, compat.text_type):
+            raise AssertionError("result must be of type unicode, type"
+                                 " of result is {0!r}"
+                                 "".format(result.__class__.__name__))
         return result
 
     def __iter__(self):
@@ -1416,37 +977,6 @@ class Series(generic.NDFrame):
     if compat.PY3:  # pragma: no cover
         items = iteritems
 
-    #----------------------------------------------------------------------
-    #   Arithmetic operators
-
-    __add__ = _arith_method(operator.add, '__add__')
-    __sub__ = _arith_method(operator.sub, '__sub__')
-    __mul__ = _arith_method(operator.mul, '__mul__')
-    __truediv__ = _arith_method(
-        operator.truediv, '__truediv__', fill_zeros=np.inf)
-    __floordiv__ = _arith_method(
-        operator.floordiv, '__floordiv__', fill_zeros=np.inf)
-    __pow__ = _arith_method(operator.pow, '__pow__')
-    __mod__ = _arith_method(operator.mod, '__mod__', fill_zeros=np.nan)
-
-    __radd__ = _arith_method(_radd_compat, '__add__')
-    __rmul__ = _arith_method(operator.mul, '__mul__')
-    __rsub__ = _arith_method(lambda x, y: y - x, '__sub__')
-    __rtruediv__ = _arith_method(
-        lambda x, y: y / x, '__truediv__', fill_zeros=np.inf)
-    __rfloordiv__ = _arith_method(
-        lambda x, y: y // x, '__floordiv__', fill_zeros=np.inf)
-    __rpow__ = _arith_method(lambda x, y: y ** x, '__pow__')
-    __rmod__ = _arith_method(lambda x, y: y % x, '__mod__', fill_zeros=np.nan)
-
-    # comparisons
-    __gt__ = _comp_method(operator.gt, '__gt__')
-    __ge__ = _comp_method(operator.ge, '__ge__')
-    __lt__ = _comp_method(operator.lt, '__lt__')
-    __le__ = _comp_method(operator.le, '__le__')
-    __eq__ = _comp_method(operator.eq, '__eq__')
-    __ne__ = _comp_method(operator.ne, '__ne__', True)
-
     # inversion
     def __neg__(self):
         arr = operator.neg(self.values)
@@ -1455,26 +985,6 @@ class Series(generic.NDFrame):
     def __invert__(self):
         arr = operator.inv(self.values)
         return self._constructor(arr, self.index, name=self.name)
-
-    # binary logic
-    __or__ = _bool_method(operator.or_, '__or__')
-    __and__ = _bool_method(operator.and_, '__and__')
-    __xor__ = _bool_method(operator.xor, '__xor__')
-
-    # Inplace operators
-    __iadd__ = __add__
-    __isub__ = __sub__
-    __imul__ = __mul__
-    __itruediv__ = __truediv__
-    __ifloordiv__ = __floordiv__
-    __ipow__ = __pow__
-
-    # Python 2 division operators
-    if not compat.PY3:
-        __div__ = _arith_method(operator.div, '__div__', fill_zeros=np.inf)
-        __rdiv__ = _arith_method(
-            lambda x, y: y / x, '__div__', fill_zeros=np.inf)
-        __idiv__ = __div__
 
     #----------------------------------------------------------------------
     # unbox reductions
@@ -1661,116 +1171,9 @@ class Series(generic.NDFrame):
         -------
         duplicated : Series
         """
-        keys = com._ensure_object(self.values)
+        keys = _ensure_object(self.values)
         duplicated = lib.duplicated(keys, take_last=take_last)
         return self._constructor(duplicated, index=self.index, name=self.name)
-
-    sum = _make_stat_func(nanops.nansum, 'sum', 'sum')
-    mean = _make_stat_func(nanops.nanmean, 'mean', 'mean')
-    median = _make_stat_func(nanops.nanmedian, 'median', 'median', extras='')
-    prod = _make_stat_func(nanops.nanprod, 'product', 'prod', extras='')
-
-    @Substitution(name='mean absolute deviation', shortname='mad',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def mad(self, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('mad', level=level, skipna=skipna)
-
-        demeaned = self - self.mean(skipna=skipna)
-        return np.abs(demeaned).mean(skipna=skipna)
-
-    @Substitution(name='minimum', shortname='min',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def min(self, axis=None, out=None, skipna=True, level=None):
-        """
-        Notes
-        -----
-        This method returns the minimum of the values in the Series. If you
-        want the *index* of the minimum, use ``Series.idxmin``. This is the
-        equivalent of the ``numpy.ndarray`` method ``argmin``.
-
-        See Also
-        --------
-        Series.idxmin
-        DataFrame.idxmin
-        """
-        if level is not None:
-            return self._agg_by_level('min', level=level, skipna=skipna)
-        return nanops.nanmin(_values_from_object(self), skipna=skipna)
-
-    @Substitution(name='maximum', shortname='max',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def max(self, axis=None, out=None, skipna=True, level=None):
-        """
-        Notes
-        -----
-        This method returns the maximum of the values in the Series. If you
-        want the *index* of the maximum, use ``Series.idxmax``. This is the
-        equivalent of the ``numpy.ndarray`` method ``argmax``.
-
-        See Also
-        --------
-        Series.idxmax
-        DataFrame.idxmax
-        """
-        if level is not None:
-            return self._agg_by_level('max', level=level, skipna=skipna)
-        return nanops.nanmax(_values_from_object(self), skipna=skipna)
-
-    @Substitution(name='standard deviation', shortname='stdev',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc +
-              """
-        Normalized by N-1 (unbiased estimator).
-        """)
-    def std(self, axis=None, dtype=None, out=None, ddof=1, skipna=True,
-            level=None):
-        if level is not None:
-            return self._agg_by_level('std', level=level, skipna=skipna,
-                                      ddof=ddof)
-        return np.sqrt(nanops.nanvar(_values_from_object(self), skipna=skipna, ddof=ddof))
-
-    @Substitution(name='variance', shortname='var',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc +
-              """
-        Normalized by N-1 (unbiased estimator).
-        """)
-    def var(self, axis=None, dtype=None, out=None, ddof=1, skipna=True,
-            level=None):
-        if level is not None:
-            return self._agg_by_level('var', level=level, skipna=skipna,
-                                      ddof=ddof)
-        return nanops.nanvar(_values_from_object(self), skipna=skipna, ddof=ddof)
-
-    @Substitution(name='unbiased skewness', shortname='skew',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def skew(self, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('skew', level=level, skipna=skipna)
-
-        return nanops.nanskew(_values_from_object(self), skipna=skipna)
-
-    @Substitution(name='unbiased kurtosis', shortname='kurt',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def kurt(self, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('kurt', level=level, skipna=skipna)
-
-        return nanops.nankurt(_values_from_object(self), skipna=skipna)
-
-    def _agg_by_level(self, name, level=0, skipna=True, **kwds):
-        grouped = self.groupby(level=level)
-        if hasattr(grouped, name) and skipna:
-            return getattr(grouped, name)(**kwds)
-        method = getattr(type(self), name)
-        applyf = lambda x: method(x, skipna=skipna, **kwds)
-        return grouped.aggregate(applyf)
 
     def idxmin(self, axis=None, out=None, skipna=True):
         """
@@ -1828,124 +1231,6 @@ class Series(generic.NDFrame):
     argmin = idxmin
     argmax = idxmax
 
-    def cumsum(self, axis=0, dtype=None, out=None, skipna=True):
-        """
-        Cumulative sum of values. Preserves locations of NaN values
-
-        Extra parameters are to preserve ndarray interface.
-
-        Parameters
-        ----------
-        skipna : boolean, default True
-            Exclude NA/null values
-
-        Returns
-        -------
-        cumsum : Series
-        """
-        arr = _values_from_object(self).copy()
-
-        do_mask = skipna and not issubclass(self.dtype.type,
-                                            (np.integer, np.bool_))
-        if do_mask:
-            mask = isnull(arr)
-            np.putmask(arr, mask, 0.)
-
-        result = arr.cumsum()
-
-        if do_mask:
-            np.putmask(result, mask, pa.NA)
-
-        return self._constructor(result, index=self.index, name=self.name)
-
-    def cumprod(self, axis=0, dtype=None, out=None, skipna=True):
-        """
-        Cumulative product of values. Preserves locations of NaN values
-
-        Extra parameters are to preserve ndarray interface.
-
-        Parameters
-        ----------
-        skipna : boolean, default True
-            Exclude NA/null values
-
-        Returns
-        -------
-        cumprod : Series
-        """
-        arr = _values_from_object(self).copy()
-
-        do_mask = skipna and not issubclass(self.dtype.type,
-                                            (np.integer, np.bool_))
-        if do_mask:
-            mask = isnull(arr)
-            np.putmask(arr, mask, 1.)
-
-        result = arr.cumprod()
-
-        if do_mask:
-            np.putmask(result, mask, pa.NA)
-
-        return self._constructor(result, index=self.index, name=self.name)
-
-    def cummax(self, axis=0, dtype=None, out=None, skipna=True):
-        """
-        Cumulative max of values. Preserves locations of NaN values
-
-        Extra parameters are to preserve ndarray interface.
-
-        Parameters
-        ----------
-        skipna : boolean, default True
-            Exclude NA/null values
-
-        Returns
-        -------
-        cummax : Series
-        """
-        arr = _values_from_object(self).copy()
-
-        do_mask = skipna and not issubclass(self.dtype.type, np.integer)
-        if do_mask:
-            mask = isnull(arr)
-            np.putmask(arr, mask, -np.inf)
-
-        result = np.maximum.accumulate(arr)
-
-        if do_mask:
-            np.putmask(result, mask, pa.NA)
-
-        return self._constructor(result, index=self.index, name=self.name)
-
-    def cummin(self, axis=0, dtype=None, out=None, skipna=True):
-        """
-        Cumulative min of values. Preserves locations of NaN values
-
-        Extra parameters are to preserve ndarray interface.
-
-        Parameters
-        ----------
-        skipna : boolean, default True
-            Exclude NA/null values
-
-        Returns
-        -------
-        cummin : Series
-        """
-        arr = _values_from_object(self).copy()
-
-        do_mask = skipna and not issubclass(self.dtype.type, np.integer)
-        if do_mask:
-            mask = isnull(arr)
-            np.putmask(arr, mask, np.inf)
-
-        result = np.minimum.accumulate(arr)
-
-        if do_mask:
-            np.putmask(result, mask, pa.NA)
-
-        return self._constructor(result, index=self.index, name=self.name)
-
     @Appender(pa.Array.round.__doc__)
     def round(self, decimals=0, out=None):
         """
@@ -1975,7 +1260,12 @@ class Series(generic.NDFrame):
         valid_values = self.dropna().values
         if len(valid_values) == 0:
             return pa.NA
-        return _quantile(valid_values, q * 100)
+        result = _quantile(valid_values, q * 100)
+        if result.dtype == _TD_DTYPE:
+            from pandas.tseries.timedeltas import to_timedelta
+            return to_timedelta(result)
+
+        return result
 
     def ptp(self, axis=None, out=None):
         return _values_from_object(self).ptp(axis, out)
@@ -2233,16 +1523,6 @@ class Series(generic.NDFrame):
         name = _maybe_match_name(self, other)
         return self._constructor(result, index=new_index, name=name)
 
-    add = _flex_method(operator.add, 'add')
-    sub = _flex_method(operator.sub, 'subtract')
-    mul = _flex_method(operator.mul, 'multiply')
-    try:
-        div = _flex_method(operator.div, 'divide')
-    except AttributeError:  # pragma: no cover
-        # Python 3
-        div = _flex_method(operator.truediv, 'divide')
-    mod = _flex_method(operator.mod, 'mod')
-
     def combine(self, other, func, fill_value=nan):
         """
         Perform elementwise binary operation on two Series using given function
@@ -2342,7 +1622,7 @@ class Series(generic.NDFrame):
             raise TypeError('This Series is a view of some other array, to '
                             'sort in-place you must create a copy')
 
-        self[:] = sortedSeries
+        self._data = sortedSeries._data.copy()
         self.index = sortedSeries.index
 
     def sort_index(self, ascending=True):
@@ -2684,6 +1964,11 @@ class Series(generic.NDFrame):
         else:
             return self._constructor(mapped, index=self.index, name=self.name)
 
+    def _reduce(self, op, axis=0, skipna=True, numeric_only=None,
+                filter_type=None, **kwds):
+        """ perform a reduction operation """
+        return op(_values_from_object(self), skipna=skipna, **kwds)
+
     def _reindex_indexer(self, new_index, indexer, copy):
         if indexer is None:
             if copy:
@@ -2697,6 +1982,14 @@ class Series(generic.NDFrame):
     def _needs_reindex_multi(self, axes, method, level):
         """ check if we do need a multi reindex; this is for compat with higher dims """
         return False
+
+    @Appender(generic._shared_docs['reindex'] % _shared_doc_kwargs)
+    def rename(self, index=None, **kwargs):
+        return super(Series, self).rename(index=index, **kwargs)
+
+    @Appender(generic._shared_docs['reindex'] % _shared_doc_kwargs)
+    def reindex(self, index=None, **kwargs):
+        return super(Series, self).reindex(index=index, **kwargs)
 
     def reindex_axis(self, labels, axis=0, **kwargs):
         """ for compatibility with higher dims """
@@ -3038,7 +2331,7 @@ class Series(generic.NDFrame):
 
         return self._constructor(new_values, index=new_index, name=self.name)
 
-    def tz_localize(self, tz, copy=True):
+    def tz_localize(self, tz, copy=True, infer_dst=False):
         """
         Localize tz-naive TimeSeries to target time zone
         Entries will retain their "naive" value but will be annotated as
@@ -3052,6 +2345,8 @@ class Series(generic.NDFrame):
         tz : string or pytz.timezone object
         copy : boolean, default True
             Also make a copy of the underlying data
+        infer_dst : boolean, default False
+            Attempt to infer fall dst-transition hours based on order
 
         Returns
         -------
@@ -3065,7 +2360,7 @@ class Series(generic.NDFrame):
 
             new_index = DatetimeIndex([], tz=tz)
         else:
-            new_index = self.index.tz_localize(tz)
+            new_index = self.index.tz_localize(tz, infer_dst=infer_dst)
 
         new_values = self.values
         if copy:
@@ -3123,7 +2418,8 @@ class Series(generic.NDFrame):
         new_index = self.index.to_period(freq=freq)
         return self._constructor(new_values, index=new_index, name=self.name)
 
-Series._setup_axes(['index'], info_axis=0)
+Series._setup_axes(['index'], info_axis=0, stat_axis=0)
+Series._add_numeric_operations()
 _INDEX_TYPES = ndarray, Index, list, tuple
 
 # reinstall the SeriesIndexer
@@ -3269,3 +2565,7 @@ import pandas.tools.plotting as _gfx
 
 Series.plot = _gfx.plot_series
 Series.hist = _gfx.hist_series
+
+# Add arithmetic!
+ops.add_flex_arithmetic_methods(Series, **ops.series_flex_funcs)
+ops.add_special_arithmetic_methods(Series, **ops.series_special_funcs)

@@ -14,7 +14,7 @@ from pandas.tseries.period import Period
 from pandas import json
 from pandas.compat import map, zip, reduce, range, lrange, u, add_metaclass
 from pandas.core import config
-from pandas.core.common import pprint_thing, PandasError
+from pandas.core.common import pprint_thing
 import pandas.compat as compat
 from warnings import warn
 
@@ -45,11 +45,13 @@ def get_writer(engine_name):
     except KeyError:
         raise ValueError("No Excel writer '%s'" % engine_name)
 
-def read_excel(path_or_buf, sheetname, **kwds):
+def read_excel(io, sheetname, **kwds):
     """Read an Excel table into a pandas DataFrame
 
     Parameters
     ----------
+    io : string, file-like object or xlrd workbook
+        If a string, expected to be a path to xls or xlsx file
     sheetname : string
          Name of Excel sheet
     header : int, default 0
@@ -74,7 +76,10 @@ def read_excel(path_or_buf, sheetname, **kwds):
         values are overridden, otherwise they're appended to
     verbose : boolean, default False
         Indicate number of NA values placed in non-numeric columns
-
+    engine: string, default None
+        If io is not a buffer or path, this must be set to identify io.
+        Acceptable values are None or xlrd
+        
     Returns
     -------
     parsed : DataFrame
@@ -84,7 +89,10 @@ def read_excel(path_or_buf, sheetname, **kwds):
         kwds.pop('kind')
         warn("kind keyword is no longer supported in read_excel and may be "
              "removed in a future version", FutureWarning)
-    return ExcelFile(path_or_buf).parse(sheetname=sheetname, **kwds)
+    
+    engine = kwds.pop('engine', None)   
+        
+    return ExcelFile(io, engine=engine).parse(sheetname=sheetname, **kwds)
 
 
 class ExcelFile(object):
@@ -94,10 +102,13 @@ class ExcelFile(object):
 
     Parameters
     ----------
-    path : string or file-like object
-        Path to xls or xlsx file
+    io : string, file-like object or xlrd workbook
+        If a string, expected to be a path to xls or xlsx file
+    engine: string, default None
+        If io is not a buffer or path, this must be set to identify io.
+        Acceptable values are None or xlrd
     """
-    def __init__(self, path_or_buf, **kwds):
+    def __init__(self, io, **kwds):
 
         import xlrd  # throw an ImportError if we need to
 
@@ -106,14 +117,22 @@ class ExcelFile(object):
             raise ImportError("pandas requires xlrd >= 0.9.0 for excel "
                               "support, current version " + xlrd.__VERSION__)
 
-        self.path_or_buf = path_or_buf
-        self.tmpfile = None
+        self.io = io
+        
+        engine = kwds.pop('engine', None)
+        
+        if engine is not None and engine != 'xlrd':
+            raise ValueError("Unknown engine: %s" % engine)
 
-        if isinstance(path_or_buf, compat.string_types):
-            self.book = xlrd.open_workbook(path_or_buf)
-        else:
-            data = path_or_buf.read()
+        if isinstance(io, compat.string_types):
+            self.book = xlrd.open_workbook(io)
+        elif engine == "xlrd" and isinstance(io, xlrd.Book):
+            self.book = io
+        elif hasattr(io, "read"):
+            data = io.read()
             self.book = xlrd.open_workbook(file_contents=data)
+        else:
+            raise ValueError('Must explicitly set engine if not passing in buffer or path for io.')            
 
     def parse(self, sheetname, header=0, skiprows=None, skip_footer=0,
               index_col=None, parse_cols=None, parse_dates=False,
@@ -259,6 +278,17 @@ class ExcelFile(object):
     @property
     def sheet_names(self):
         return self.book.sheet_names()
+
+    def close(self):
+        """close io if necessary"""
+        if hasattr(self.io, 'close'):
+            self.io.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
 def _trim_excel_header(row):
@@ -407,6 +437,17 @@ class ExcelWriter(object):
             raise ValueError(msg)
         else:
             return True
+
+    # Allow use as a contextmanager
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def close(self):
+        """synonym for save, to make it more file-like"""
+        return self.save()
 
 
 class _OpenpyxlWriter(ExcelWriter):
@@ -596,6 +637,7 @@ class _XlwtWriter(ExcelWriter):
         Parameters
         ----------
         style_dict: style dictionary to convert
+        num_format_str: optional number format string
         """
         import xlwt
 
@@ -611,3 +653,95 @@ class _XlwtWriter(ExcelWriter):
 
 register_writer(_XlwtWriter)
 
+
+class _XlsxWriter(ExcelWriter):
+    engine = 'xlsxwriter'
+    supported_extensions = ('.xlsx',)
+
+    def __init__(self, path, **engine_kwargs):
+        # Use the xlsxwriter module as the Excel writer.
+        import xlsxwriter
+
+        super(_XlsxWriter, self).__init__(path, **engine_kwargs)
+
+        self.book = xlsxwriter.Workbook(path, **engine_kwargs)
+
+    def save(self):
+        """
+        Save workbook to disk.
+        """
+        return self.book.close()
+
+    def write_cells(self, cells, sheet_name=None, startrow=0, startcol=0):
+        # Write the frame cells using xlsxwriter.
+
+        sheet_name = self._get_sheet_name(sheet_name)
+
+        if sheet_name in self.sheets:
+            wks = self.sheets[sheet_name]
+        else:
+            wks = self.book.add_worksheet(sheet_name)
+            self.sheets[sheet_name] = wks
+
+        style_dict = {}
+
+        for cell in cells:
+            val = _conv_value(cell.val)
+
+            num_format_str = None
+            if isinstance(cell.val, datetime.datetime):
+                num_format_str = "YYYY-MM-DD HH:MM:SS"
+            if isinstance(cell.val, datetime.date):
+                num_format_str = "YYYY-MM-DD"
+
+            stylekey = json.dumps(cell.style)
+            if num_format_str:
+                stylekey += num_format_str
+
+            if stylekey in style_dict:
+                style = style_dict[stylekey]
+            else:
+                style = self._convert_to_style(cell.style, num_format_str)
+                style_dict[stylekey] = style
+
+            if cell.mergestart is not None and cell.mergeend is not None:
+                wks.merge_range(startrow + cell.row,
+                                startrow + cell.mergestart,
+                                startcol + cell.col,
+                                startcol + cell.mergeend,
+                                val, style)
+            else:
+                wks.write(startrow + cell.row,
+                          startcol + cell.col,
+                          val, style)
+
+    def _convert_to_style(self, style_dict, num_format_str=None):
+        """
+        converts a style_dict to an xlsxwriter format object
+        Parameters
+        ----------
+        style_dict: style dictionary to convert
+        num_format_str: optional number format string
+        """
+        if style_dict is None:
+            return None
+
+        # Create a XlsxWriter format object.
+        xl_format = self.book.add_format()
+
+        # Map the cell font to XlsxWriter font properties.
+        if style_dict.get('font'):
+            font = style_dict['font']
+            if font.get('bold'):
+                xl_format.set_bold()
+
+        # Map the cell borders to XlsxWriter border properties.
+        if style_dict.get('borders'):
+            xl_format.set_border()
+
+        if num_format_str is not None:
+            xl_format.set_num_format(num_format_str)
+
+        return xl_format
+
+register_writer(_XlsxWriter)

@@ -219,7 +219,7 @@ Boolean Reductions
 
 .. _basics.reductions:
 
-Furthermore, you can apply the reduction functions: ``any()`` and ``all()`` to provide a
+Furthermore, you can apply the reductions: ``empty``, ``any()``, ``all()``, and ``bool()`` to provide a
 way to summarize these results.
 
 .. ipython:: python
@@ -233,7 +233,7 @@ You can reduce to a final boolean value.
 
    (df>0).any().any()
 
-Finally you can test if a pandas object is empty, via the ``empty`` property.
+You can test if a pandas object is empty, via the ``empty`` property.
 
 .. ipython:: python
 
@@ -261,6 +261,15 @@ Finally you can test if a pandas object is empty, via the ``empty`` property.
 
        ValueError: The truth value of an array is ambiguous. Use a.empty, a.any() or a.all().
 
+
+To evaluate single-element pandas objects in a boolean context, use the method ``.bool()``:
+
+   .. ipython:: python
+
+      Series([True]).bool()
+      Series([False]).bool()
+      DataFrame([[True]]).bool()
+      DataFrame([[False]]).bool()
 
 See :ref:`gotchas<gotchas.truth>` for a more detailed discussion.
 
@@ -505,6 +514,12 @@ normally distributed data into equal-size quartiles like so:
    factor
    value_counts(factor)
 
+We can also pass infinite values to define the bins:
+.. ipython:: python
+
+   arr = np.random.randn(20)
+   factor = cut(arr, [-np.inf, 0, np.inf])
+   factor
 
 .. _basics.apply:
 
@@ -860,7 +875,7 @@ Thus, for example:
 .. ipython::
 
    In [0]: for col in df:
-      ...:     print col
+      ...:     print(col)
       ...:
 
 iteritems
@@ -878,8 +893,8 @@ For example:
 .. ipython::
 
    In [0]: for item, frame in wp.iteritems():
-      ...:     print item
-      ...:     print frame
+      ...:     print(item)
+      ...:     print(frame)
       ...:
 
 
@@ -895,7 +910,7 @@ containing the data in each row:
 .. ipython::
 
    In [0]: for row_index, row in df2.iterrows():
-      ...:     print '%s\n%s' % (row_index, row)
+      ...:     print('%s\n%s' % (row_index, row))
       ...:
 
 For instance, a contrived way to transpose the dataframe would be:
@@ -903,11 +918,11 @@ For instance, a contrived way to transpose the dataframe would be:
 .. ipython:: python
 
    df2 = DataFrame({'x': [1, 2, 3], 'y': [4, 5, 6]})
-   print df2
-   print df2.T
+   print(df2)
+   print(df2.T)
 
    df2_t = DataFrame(dict((idx,values) for idx, values in df2.iterrows()))
-   print df2_t
+   print(df2_t)
 
 .. note::
 
@@ -918,8 +933,8 @@ For instance, a contrived way to transpose the dataframe would be:
 
       df_iter = DataFrame([[1, 1.0]], columns=['x', 'y'])
       row = next(df_iter.iterrows())[1]
-      print row['x'].dtype
-      print df_iter['x'].dtype
+      print(row['x'].dtype)
+      print(df_iter['x'].dtype)
 
 itertuples
 ~~~~~~~~~~
@@ -932,7 +947,8 @@ For instance,
 
 .. ipython:: python
 
-   for r in df2.itertuples(): print r
+   for r in df2.itertuples():
+       print(r)
 
 .. _basics.string_methods:
 
@@ -976,7 +992,7 @@ Methods like ``replace`` and ``findall`` take regular expressions, too:
    s3.str.replace('^.a|dog', 'XX-XX ', case=False)
 
 The method ``match`` returns the groups in a regular expression in one tuple.
- Starting in pandas version 0.13, the method ``extract`` is available to 
+Starting in pandas version 0.13.0, the method ``extract`` is available to
 accomplish this more conveniently.
 
 Extracting a regular expression with one group returns a Series of strings.
@@ -985,16 +1001,16 @@ Extracting a regular expression with one group returns a Series of strings.
 
    Series(['a1', 'b2', 'c3']).str.extract('[ab](\d)')
 
-Elements that do not match return ``NaN``. Extracting a regular expression 
+Elements that do not match return ``NaN``. Extracting a regular expression
 with more than one group returns a DataFrame with one column per group.
 
 .. ipython:: python
 
    Series(['a1', 'b2', 'c3']).str.extract('([ab])(\d)')
 
-Elements that do not match return a row of ``NaN``s. 
-Thus, a Series of messy strings can be "converted" into a 
-like-indexed Series or DataFrame of cleaned-up or more useful strings, 
+Elements that do not match return a row of ``NaN``s.
+Thus, a Series of messy strings can be "converted" into a
+like-indexed Series or DataFrame of cleaned-up or more useful strings,
 without necessitating ``get()`` to access tuples or ``re.match`` objects.
 
 Named groups like
@@ -1403,11 +1419,6 @@ Console Output Formatting
 -------------------------
 
 .. _basics.console_output:
-
-**Note:** ``set_printoptions``/ ``reset_printoptions``  are now deprecated (but functioning),
-and both, as well as ``set_eng_float_format``, use the options API behind the scenes.
-The corresponding options now live under "print.XYZ", and you can set them directly with
-``get/set_option``.
 
 Use the ``set_eng_float_format`` function in the ``pandas.core.common`` module
 to alter the floating-point formatting of pandas objects to produce a particular

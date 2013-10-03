@@ -23,7 +23,7 @@ import pandas.computation.expressions as expressions
 from pandas.tslib import Timestamp
 from pandas import compat
 from pandas.compat import range, lrange, lmap, callable, map, zip
-
+from pandas.tseries.timedeltas import _coerce_scalar_to_timedelta_type
 
 class Block(PandasObject):
 
@@ -97,8 +97,13 @@ class Block(PandasObject):
                 indexer = self.ref_items.get_indexer(self.items)
                 indexer = com._ensure_platform_int(indexer)
                 if (indexer == -1).any():
-                    raise AssertionError('Some block items were not in block '
-                                         'ref_items')
+
+                    # this means that we have nan's in our block
+                    try:
+                        indexer[indexer == -1] = np.arange(len(self.items))[isnull(self.items)]
+                    except:
+                        raise AssertionError('Some block items were not in block '
+                                             'ref_items')
 
             self._ref_locs = indexer
         return self._ref_locs
@@ -1078,6 +1083,20 @@ class TimeDeltaBlock(IntBlock):
 
         return value
 
+    def _try_coerce_args(self, values, other):
+        """ provide coercion to our input arguments
+            we are going to compare vs i8, so coerce to integer
+            values is always ndarra like, other may not be """
+        values = values.view('i8')
+        if isnull(other) or (np.isscalar(other) and other == tslib.iNaT):
+            other = tslib.iNaT
+        elif isinstance(other, np.timedelta64):
+            other = _coerce_scalar_to_timedelta_type(other,unit='s').item()
+        else:
+            other = other.view('i8')
+
+        return values, other
+
     def _try_operate(self, values):
         """ return a version to operate on """
         return values.view('i8')
@@ -1164,8 +1183,8 @@ class ObjectBlock(Block):
                 values = self.iget(i)
 
                 values = com._possibly_convert_objects(
-                    values, convert_dates=convert_dates, convert_numeric=convert_numeric)
-                values = _block_shape(values)
+                    values.ravel(), convert_dates=convert_dates, convert_numeric=convert_numeric).reshape(values.shape)
+                values = _block_shape(values, ndim=self.ndim)
                 items = self.items.take([i])
                 placement = None if is_unique else [i]
                 newb = make_block(
@@ -1175,7 +1194,7 @@ class ObjectBlock(Block):
         else:
 
             values = com._possibly_convert_objects(
-                self.values, convert_dates=convert_dates, convert_numeric=convert_numeric)
+                self.values.ravel(), convert_dates=convert_dates, convert_numeric=convert_numeric).reshape(self.values.shape)
             blocks.append(
                 make_block(values, self.items, self.ref_items, ndim=self.ndim))
 
@@ -2334,8 +2353,12 @@ class BlockManager(PandasObject):
         -------
         copy : BlockManager
         """
-        new_axes = list(self.axes)
-        return self.apply('copy', axes=new_axes, deep=deep, do_integrity_check=False)
+        if deep:
+            new_axes = [ax.view() for ax in self.axes]
+        else:
+            new_axes = list(self.axes)
+        return self.apply('copy', axes=new_axes, deep=deep,
+                        ref_items=new_axes[0], do_integrity_check=False)
 
     def as_matrix(self, items=None):
         if len(self.blocks) == 0:
@@ -2496,9 +2519,18 @@ class BlockManager(PandasObject):
 
     def get(self, item):
         if self.items.is_unique:
+
+            if isnull(item):
+                indexer = np.arange(len(self.items))[isnull(self.items)]
+                return self.get_for_nan_indexer(indexer)
+
             _, block = self._find_block(item)
             return block.get(item)
         else:
+
+            if isnull(item):
+                raise ValueError("cannot label index with a null key")
+
             indexer = self.items.get_loc(item)
             ref_locs = np.array(self._set_ref_locs())
 
@@ -2524,12 +2556,29 @@ class BlockManager(PandasObject):
 
     def iget(self, i):
         item = self.items[i]
-        if self.items.is_unique:
-            return self.get(item)
 
-        # compute the duplicative indexer if needed
+        # unique
+        if self.items.is_unique:
+            if notnull(item):
+                return self.get(item)
+            return self.get_for_nan_indexer(i)
+
         ref_locs = self._set_ref_locs()
         b, loc = ref_locs[i]
+        return b.iget(loc)
+
+    def get_for_nan_indexer(self, indexer):
+
+        # allow a single nan location indexer
+        if not np.isscalar(indexer):
+            if len(indexer) == 1:
+                indexer = indexer.item()
+            else:
+                raise ValueError("cannot label index with a null key")
+
+        # take a nan indexer and return the values
+        ref_locs = self._set_ref_locs(do_refs='force')
+        b, loc = ref_locs[indexer]
         return b.iget(loc)
 
     def get_scalar(self, tup):
@@ -3481,9 +3530,16 @@ def _stack_arrays(tuples, ref_items, dtype):
     if ref_items.is_unique:
         items = ref_items[ref_items.isin(names)]
     else:
-        items = _ensure_index([n for n in names if n in ref_items])
-        if len(items) != len(stacked):
-            raise Exception("invalid names passed _stack_arrays")
+        # a mi
+        if isinstance(ref_items, MultiIndex):
+            names = MultiIndex.from_tuples(names)
+            items = ref_items[ref_items.isin(names)]
+
+        # plain old dups
+        else:
+            items = _ensure_index([n for n in names if n in ref_items])
+            if len(items) != len(stacked):
+                raise ValueError("invalid names passed _stack_arrays")
 
     return items, stacked, placement
 
@@ -3610,7 +3666,7 @@ def _merge_blocks(blocks, items, dtype=None, _can_consolidate=True):
 
 def _block_shape(values, ndim=1, shape=None):
     """ guarantee the shape of the values to be at least 1 d """
-    if values.ndim == ndim:
+    if values.ndim <= ndim:
         if shape is None:
             shape = values.shape
         values = values.reshape(tuple((1,) + shape))

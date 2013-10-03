@@ -73,7 +73,7 @@ class SafeForLongAndSparse(object):
         try:
             from scipy.stats import skew
         except ImportError:
-            raise nose.SkipTest
+            raise nose.SkipTest("no scipy.stats.skew")
 
         def this_skew(x):
             if len(x) < 3:
@@ -397,7 +397,7 @@ class CheckIndexing(object):
         test_comp(operator.le)
 
     def test_setitem_ndarray(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    from pandas import DateRange, datetools
 
     #    timeidx = DateRange(start=datetime(2009,1,1),
@@ -510,7 +510,7 @@ class CheckIndexing(object):
         pass
 
     def test_getitem_fancy_xs(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
         # self.assertRaises(NotImplementedError, self.panel4d.major_xs)
         # self.assertRaises(NotImplementedError, self.panel4d.minor_xs)
 
@@ -706,7 +706,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
         assert_panel4d_equal(result, expected)
 
     def test_from_dict_mixed_orient(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    df = tm.makeDataFrame()
     #    df['foo'] = 'bar'
 
@@ -762,11 +762,6 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
                                       major=self.panel4d.major_axis,
                                       minor=self.panel4d.minor_axis)
 
-        assert(result.labels is self.panel4d.labels)
-        assert(result.items is self.panel4d.items)
-        assert(result.major_axis is self.panel4d.major_axis)
-        assert(result.minor_axis is self.panel4d.minor_axis)
-
         # don't necessarily copy
         result = self.panel4d.reindex()
         assert_panel4d_equal(result,self.panel4d)
@@ -803,7 +798,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
         assert_panel4d_equal(smaller, smaller_like)
 
     def test_take(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
 
     #    # axis == 0
     #    result = self.panel.take([2, 0, 1], axis=0)
@@ -849,23 +844,11 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
         # assert_panel_equal(sorted_panel, self.panel)
 
     def test_fillna(self):
+        self.assert_(not np.isfinite(self.panel4d.values).all())
         filled = self.panel4d.fillna(0)
         self.assert_(np.isfinite(filled.values).all())
 
-        filled = self.panel4d.fillna(method='backfill')
-        assert_panel_equal(filled['l1'],
-                           self.panel4d['l1'].fillna(method='backfill'))
-
-        panel4d = self.panel4d.copy()
-        panel4d['str'] = 'foo'
-
-        filled = panel4d.fillna(method='backfill')
-        assert_panel_equal(filled['l1'],
-                           panel4d['l1'].fillna(method='backfill'))
-
-        empty = self.panel4d.reindex(labels=[])
-        filled = empty.fillna(0)
-        assert_panel4d_equal(filled, empty)
+        self.assertRaises(NotImplementedError, self.panel4d.fillna, method='pad')
 
     def test_swapaxes(self):
         result = self.panel4d.swapaxes('labels', 'items')
@@ -893,7 +876,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
         self.assert_(id(self.panel4d) != id(result))
 
     def test_to_frame(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    # filtered
     #    filtered = self.panel.to_frame()
     #    expected = self.panel.to_frame().dropna(how='any')
@@ -907,7 +890,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
     #    self.assertEqual(unfiltered.index.names, ('major', 'minor'))
 
     def test_to_frame_mixed(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    panel = self.panel.fillna(0)
     #    panel['str'] = 'foo'
     #    panel['bool'] = panel['ItemA'] > 0
@@ -945,20 +928,20 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
         assert_panel4d_equal(p4d, expected)
 
     def test_filter(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
 
     def test_apply(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
 
     def test_compound(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    compounded = self.panel.compound()
 
     #    assert_series_equal(compounded['ItemA'],
     #                        (1 + self.panel['ItemA']).product(0) - 1)
 
     def test_shift(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    # major
     #    idx = self.panel.major_axis[0]
     #    idx_lag = self.panel.major_axis[1]
@@ -980,7 +963,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
     #    self.assertRaises(Exception, self.panel.shift, 1, axis='items')
 
     def test_multiindex_get(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    ind = MultiIndex.from_tuples([('a', 1), ('a', 2), ('b', 1), ('b',2)],
     #                                 names=['first', 'second'])
     #    wp = Panel(np.random.random((4,5,5)),
@@ -998,7 +981,7 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
     #                                 names=['first', 'second'])
 
     def test_multiindex_blocks(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
     #    ind = MultiIndex.from_tuples([('a', 1), ('a', 2), ('b', 1)],
     #                                 names=['first', 'second'])
     #    wp = Panel(self.panel._data)
@@ -1051,10 +1034,10 @@ class TestPanel4d(unittest.TestCase, CheckIndexing, SafeForSparse,
         self.assertRaises(Exception, group_agg, values, bounds, f2)
 
     def test_from_frame_level1_unsorted(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
 
     def test_to_excel(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
 
 
 if __name__ == '__main__':

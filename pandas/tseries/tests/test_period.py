@@ -195,7 +195,7 @@ class TestPeriodProperties(TestCase):
 
         self.assertRaises(ValueError, Period, ordinal=200701)
 
-        self.assertRaises(KeyError, Period, '2007-1-1', freq='U')
+        self.assertRaises(KeyError, Period, '2007-1-1', freq='X')
 
     def test_freq_str(self):
         i1 = Period('1982', freq='Min')
@@ -207,6 +207,16 @@ class TestPeriodProperties(TestCase):
 
         p = Period('2000-12-15')
         self.assert_('2000-12-15' in repr(p))
+
+    def test_millisecond_repr(self):
+        p = Period('2000-01-01 12:15:02.123')
+
+        self.assertEquals("Period('2000-01-01 12:15:02.123', 'L')", repr(p))
+
+    def test_microsecond_repr(self):
+        p = Period('2000-01-01 12:15:02.123567')
+
+        self.assertEquals("Period('2000-01-01 12:15:02.123567', 'U')", repr(p))
 
     def test_strftime(self):
         p = Period('2000-1-1 12:34:12', freq='S')
@@ -466,7 +476,14 @@ class TestPeriodProperties(TestCase):
         p = Period('2007-01-01 07:10:15')
         self.assert_(p.freq == 'S')
 
-        self.assertRaises(ValueError, Period, '2007-01-01 07:10:15.123456')
+        p = Period('2007-01-01 07:10:15.123')
+        self.assert_(p.freq == 'L')
+
+        p = Period('2007-01-01 07:10:15.123000')
+        self.assert_(p.freq == 'L')
+
+        p = Period('2007-01-01 07:10:15.123400')
+        self.assert_(p.freq == 'U')
 
 
 def noWrap(item):
@@ -1054,11 +1071,15 @@ class TestFreqConversion(TestCase):
 
 
 class TestPeriodIndex(TestCase):
-    def __init__(self, *args, **kwds):
-        TestCase.__init__(self, *args, **kwds)
-
     def setUp(self):
         pass
+
+    def test_hash_error(self):
+        index = period_range('20010101', periods=10)
+        with tm.assertRaisesRegexp(TypeError,
+                                   "unhashable type: %r" %
+                                   type(index).__name__):
+            hash(index)
 
     def test_make_time_series(self):
         index = PeriodIndex(freq='A', start='1/1/2001', end='12/1/2009')
@@ -1111,9 +1132,9 @@ class TestPeriodIndex(TestCase):
         self.assert_(idx.equals(exp))
 
     def test_constructor_U(self):
-        # U was used as undefined period
+        # X was used as undefined period
         self.assertRaises(KeyError, period_range, '2007-1-1', periods=500,
-                          freq='U')
+                          freq='X')
 
     def test_constructor_arrays_negative_year(self):
         years = np.arange(1960, 2000).repeat(4)
@@ -1167,6 +1188,25 @@ class TestPeriodIndex(TestCase):
         vals = vals.view(np.dtype('M8[us]'))
 
         self.assertRaises(ValueError, PeriodIndex, vals, freq='D')
+
+    def test_is_(self):
+        create_index = lambda: PeriodIndex(freq='A', start='1/1/2001',
+                                           end='12/1/2009')
+        index = create_index()
+        self.assertTrue(index.is_(index))
+        self.assertFalse(index.is_(create_index()))
+        self.assertTrue(index.is_(index.view()))
+        self.assertTrue(index.is_(index.view().view().view().view().view()))
+        self.assertTrue(index.view().is_(index))
+        ind2 = index.view()
+        index.name = "Apple"
+        self.assertTrue(ind2.is_(index))
+        self.assertFalse(index.is_(index[:]))
+        self.assertFalse(index.is_(index.asfreq('M')))
+        self.assertFalse(index.is_(index.asfreq('A')))
+        self.assertFalse(index.is_(index - 2))
+        self.assertFalse(index.is_(index - 0))
+
 
     def test_comp_period(self):
         idx = period_range('2007-01', periods=20, freq='M')
@@ -2145,6 +2185,15 @@ class TestPeriodRepresentation(unittest.TestCase):
 
     def test_secondly(self):
         self._check_freq('S', '1970-01-01')
+        
+    def test_millisecondly(self):
+        self._check_freq('L', '1970-01-01')
+
+    def test_microsecondly(self):
+        self._check_freq('U', '1970-01-01')
+        
+    def test_nanosecondly(self):
+        self._check_freq('N', '1970-01-01')        
 
     def _check_freq(self, freq, base_date):
         rng = PeriodIndex(start=base_date, periods=10, freq=freq)

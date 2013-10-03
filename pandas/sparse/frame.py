@@ -25,7 +25,7 @@ from pandas.core.internals import BlockManager, create_block_manager_from_arrays
 from pandas.core.generic import NDFrame
 from pandas.sparse.series import SparseSeries, SparseArray
 from pandas.util.decorators import Appender
-import pandas.lib as lib
+import pandas.core.ops as ops
 
 
 class SparseDataFrame(DataFrame):
@@ -46,7 +46,6 @@ class SparseDataFrame(DataFrame):
         Default fill_value for converting Series to SparseSeries. Will not
         override SparseSeries passed in
     """
-    _verbose_info = False
     _constructor_sliced = SparseSeries
     _subtyp = 'sparse_frame'
 
@@ -374,7 +373,7 @@ class SparseDataFrame(DataFrame):
         return dense.to_sparse(kind=self._default_kind,
                                fill_value=self._default_fill_value)
 
-    def _slice(self, slobj, axis=0, raise_on_error=False):
+    def _slice(self, slobj, axis=0, raise_on_error=False, typ=None):
         if axis == 0:
             if raise_on_error:
                 _check_slice_bounds(slobj, self.index)
@@ -602,20 +601,15 @@ class SparseDataFrame(DataFrame):
 
     def _join_compat(self, other, on=None, how='left', lsuffix='', rsuffix='',
                      sort=False):
-        if isinstance(other, Series):
-            if other.name is None:
-                raise ValueError('Other Series must have a name')
-            other = SparseDataFrame({other.name: other},
-                                    default_fill_value=self._default_fill_value)
         if on is not None:
-            raise NotImplementedError
-        else:
-            return self._join_index(other, how, lsuffix, rsuffix)
+            raise NotImplementedError("'on' keyword parameter is not yet "
+                                      "implemented")
+        return self._join_index(other, how, lsuffix, rsuffix)
 
     def _join_index(self, other, how, lsuffix, rsuffix):
         if isinstance(other, Series):
-            if not (other.name is not None):
-                raise AssertionError()
+            if other.name is None:
+                raise ValueError('Other Series must have a name')
 
             other = SparseDataFrame({other.name: other},
                                     default_fill_value=self._default_fill_value)
@@ -822,3 +816,9 @@ def homogenize(series_dict):
         output = series_dict
 
     return output
+
+# use unaccelerated ops for sparse objects
+ops.add_flex_arithmetic_methods(SparseDataFrame, use_numexpr=False,
+                                **ops.frame_flex_funcs)
+ops.add_special_arithmetic_methods(SparseDataFrame, use_numexpr=False,
+                                   **ops.frame_special_funcs)

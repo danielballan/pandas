@@ -36,6 +36,7 @@ object.
     * ``read_hdf``
     * ``read_sql``
     * ``read_json``
+    * ``read_msgpack`` (experimental)
     * ``read_html``
     * ``read_stata``
     * ``read_clipboard``
@@ -48,6 +49,7 @@ The corresponding ``writer`` functions are object methods that are accessed like
     * ``to_hdf``
     * ``to_sql``
     * ``to_json``
+    * ``to_msgpack`` (experimental)
     * ``to_html``
     * ``to_stata``
     * ``to_clipboard``
@@ -167,7 +169,7 @@ Consider a typical CSV file containing, in this case, some time series data:
 
 .. ipython:: python
 
-   print open('foo.csv').read()
+   print(open('foo.csv').read())
 
 The default for `read_csv` is to create a DataFrame with simple numbered rows:
 
@@ -209,7 +211,7 @@ Suppose you had data with unenclosed quotes:
 
 .. ipython:: python
 
-   print data
+   print(data)
 
 By default, ``read_csv`` uses the Excel dialect and treats the double quote as
 the quote character, which causes it to fail when it finds a newline before it
@@ -236,7 +238,7 @@ after a delimiter:
 .. ipython:: python
 
    data = 'a, b, c\n1, 2, 3\n4, 5, 6'
-   print data
+   print(data)
    pd.read_csv(StringIO(data), skipinitialspace=True)
 
 The parsers make every attempt to "do the right thing" and not be very
@@ -255,7 +257,7 @@ individual columns:
 .. ipython:: python
 
     data = 'a,b,c\n1,2,3\n4,5,6\n7,8,9'
-    print data
+    print(data)
 
     df = pd.read_csv(StringIO(data), dtype=object)
     df
@@ -275,7 +277,7 @@ used as the column names:
 
     from StringIO import StringIO
     data = 'a,b,c\n1,2,3\n4,5,6\n7,8,9'
-    print data
+    print(data)
     pd.read_csv(StringIO(data))
 
 By specifying the ``names`` argument in conjunction with ``header`` you can
@@ -284,7 +286,7 @@ any):
 
 .. ipython:: python
 
-    print data
+    print(data)
     pd.read_csv(StringIO(data), names=['foo', 'bar', 'baz'], header=0)
     pd.read_csv(StringIO(data), names=['foo', 'bar', 'baz'], header=None)
 
@@ -356,7 +358,7 @@ index column inference and discard the last column, pass ``index_col=False``:
 .. ipython:: python
 
     data = 'a,b,c\n4,apple,bat,\n8,orange,cow,'
-    print data
+    print(data)
     pd.read_csv(StringIO(data))
     pd.read_csv(StringIO(data), index_col=False)
 
@@ -411,7 +413,7 @@ column names:
 
 .. ipython:: python
 
-    print open('tmp.csv').read()
+    print(open('tmp.csv').read())
     df = pd.read_csv('tmp.csv', header=None, parse_dates=[[1, 2], [1, 3]])
     df
 
@@ -499,7 +501,7 @@ DD/MM/YYYY instead. For convenience, a ``dayfirst`` keyword is provided:
 
 .. ipython:: python
 
-   print open('tmp.csv').read()
+   print(open('tmp.csv').read())
 
    pd.read_csv('tmp.csv', parse_dates=[0])
    pd.read_csv('tmp.csv', dayfirst=True, parse_dates=[0])
@@ -527,7 +529,7 @@ By default, numbers with a thousands separator will be parsed as strings
 
 .. ipython:: python
 
-    print open('tmp.csv').read()
+    print(open('tmp.csv').read())
     df = pd.read_csv('tmp.csv', sep='|')
     df
 
@@ -537,7 +539,7 @@ The ``thousands`` keyword allows integers to be parsed correctly
 
 .. ipython:: python
 
-    print open('tmp.csv').read()
+    print(open('tmp.csv').read())
     df = pd.read_csv('tmp.csv', sep='|', thousands=',')
     df
 
@@ -614,7 +616,7 @@ Sometimes comments or meta data may be included in a file:
 
 .. ipython:: python
 
-   print open('tmp.csv').read()
+   print(open('tmp.csv').read())
 
 By default, the parse includes the comments in the output:
 
@@ -654,7 +656,7 @@ as a ``Series``:
 
 .. ipython:: python
 
-   print open('tmp.csv').read()
+   print(open('tmp.csv').read())
 
    output =  pd.read_csv('tmp.csv', squeeze=True)
    output
@@ -679,7 +681,7 @@ options:
 .. ipython:: python
 
     data= 'a,b,c\n1,Yes,2\n3,No,4'
-    print data
+    print(data)
     pd.read_csv(StringIO(data))
     pd.read_csv(StringIO(data), true_values=['Yes'], false_values=['No'])
 
@@ -730,7 +732,7 @@ should pass the ``escapechar`` option:
 .. ipython:: python
 
    data = 'a,b\n"hello, \\"Bob\\", nice to see you",5'
-   print data
+   print(data)
    pd.read_csv(StringIO(data), escapechar='\\')
 
 .. _io.fwf:
@@ -742,10 +744,13 @@ function works with data files that have known and fixed column widths.
 The function parameters to ``read_fwf`` are largely the same as `read_csv` with
 two extra parameters:
 
-  - ``colspecs``: a list of pairs (tuples), giving the extents of the
-    fixed-width fields of each line as half-open intervals [from, to[
-  - ``widths``: a list of field widths, which can be used instead of
-    ``colspecs`` if the intervals are contiguous
+  - ``colspecs``: A list of pairs (tuples) giving the extents of the
+    fixed-width fields of each line as half-open intervals (i.e.,  [from, to[ ).
+    String value 'infer' can be used to instruct the parser to try detecting
+    the column specifications from the first 100 rows of the data. Default
+    behaviour, if not specified, is to infer.
+  - ``widths``: A list of field widths which can be used instead of 'colspecs'
+    if the intervals are contiguous.
 
 .. ipython:: python
    :suppress:
@@ -763,7 +768,7 @@ Consider a typical fixed-width data file:
 
 .. ipython:: python
 
-   print open('bar.csv').read()
+   print(open('bar.csv').read())
 
 In order to parse this file into a DataFrame, we simply need to supply the
 column specifications to the `read_fwf` function along with the file name:
@@ -789,6 +794,18 @@ column widths for contiguous columns:
 The parser will take care of extra white spaces around the columns
 so it's ok to have extra separation between the columns in the file.
 
+.. versionadded:: 0.13.0
+
+By default, ``read_fwf`` will try to infer the file's ``colspecs`` by using the
+first 100 rows of the file. It can do it only in cases when the columns are
+aligned and correctly separated by the provided ``delimiter`` (default delimiter
+is whitespace).
+
+.. ipython:: python
+
+   df = pd.read_fwf('bar.csv', header=None, index_col=0)
+   df
+
 .. ipython:: python
    :suppress:
 
@@ -809,7 +826,7 @@ column:
 
 .. ipython:: python
 
-   print open('foo.csv').read()
+   print(open('foo.csv').read())
 
 In this special case, ``read_csv`` assumes that the first column is to be used
 as the index of the DataFrame:
@@ -841,7 +858,7 @@ Suppose you have data indexed by two columns:
 
 .. ipython:: python
 
-   print open('data/mindex_ex.csv').read()
+   print(open('data/mindex_ex.csv').read())
 
 The ``index_col`` argument to ``read_csv`` and ``read_table`` can take a list of
 column numbers to turn multiple columns into a ``MultiIndex`` for the index of the
@@ -868,7 +885,7 @@ of tupleizing columns, specify ``tupleize_cols=True``.
    from pandas.util.testing import makeCustomDataframe as mkdf
    df = mkdf(5,3,r_idx_nlevels=2,c_idx_nlevels=4)
    df.to_csv('mi.csv')
-   print open('mi.csv').read()
+   print(open('mi.csv').read())
    pd.read_csv('mi.csv',header=[0,1,2,3],index_col=[0,1])
 
 Note: If an ``index_col`` is not specified (e.g. you don't have an index, or wrote it
@@ -898,7 +915,7 @@ class of the csv module.
 
 .. ipython:: python
 
-    print open('tmp2.sv').read()
+    print(open('tmp2.sv').read())
     pd.read_csv('tmp2.sv')
 
 .. _io.chunking:
@@ -912,7 +929,7 @@ rather than reading the entire file into memory, such as the following:
 
 .. ipython:: python
 
-   print open('tmp.sv').read()
+   print(open('tmp.sv').read())
    table = pd.read_table('tmp.sv', sep='|')
    table
 
@@ -926,7 +943,7 @@ value will be an iterable object of type ``TextFileReader``:
    reader
 
    for chunk in reader:
-       print chunk
+       print(chunk)
 
 
 Specifying ``iterator=True`` will also return the ``TextFileReader`` object:
@@ -1333,7 +1350,7 @@ Specify an HTML attribute
 
    dfs1 = read_html(url, attrs={'id': 'table'})
    dfs2 = read_html(url, attrs={'class': 'sortable'})
-   print np.array_equal(dfs1[0], dfs2[0])  # Should be True
+   print(np.array_equal(dfs1[0], dfs2[0]))  # Should be True
 
 Use some combination of the above
 
@@ -1400,7 +1417,7 @@ in the method ``to_string`` described above.
 
    df = DataFrame(randn(2, 2))
    df
-   print df.to_html()  # raw html
+   print(df.to_html())  # raw html
 
 .. ipython:: python
    :suppress:
@@ -1416,7 +1433,7 @@ The ``columns`` argument will limit the columns shown
 
 .. ipython:: python
 
-   print df.to_html(columns=[0])
+   print(df.to_html(columns=[0]))
 
 .. ipython:: python
    :suppress:
@@ -1433,7 +1450,7 @@ point values
 
 .. ipython:: python
 
-   print df.to_html(float_format='{0:.10f}'.format)
+   print(df.to_html(float_format='{0:.10f}'.format))
 
 .. ipython:: python
    :suppress:
@@ -1450,7 +1467,7 @@ off
 
 .. ipython:: python
 
-   print df.to_html(bold_rows=False)
+   print(df.to_html(bold_rows=False))
 
 .. ipython:: python
    :suppress:
@@ -1466,7 +1483,7 @@ table CSS classes. Note that these classes are *appended* to the existing
 
 .. ipython:: python
 
-   print df.to_html(classes=['awesome_table_class', 'even_more_awesome_class'])
+   print(df.to_html(classes=['awesome_table_class', 'even_more_awesome_class']))
 
 Finally, the ``escape`` argument allows you to control whether the
 "<", ">" and "&" characters escaped in the resulting HTML (by default it is
@@ -1487,7 +1504,7 @@ Escaped:
 
 .. ipython:: python
 
-   print df.to_html()
+   print(df.to_html())
 
 .. raw:: html
    :file: _static/escape.html
@@ -1496,7 +1513,7 @@ Not escaped:
 
 .. ipython:: python
 
-   print df.to_html(escape=False)
+   print(df.to_html(escape=False))
 
 .. raw:: html
    :file: _static/noescape.html
@@ -1654,7 +1671,7 @@ indices to be parsed.
 
 .. code-block:: python
 
-   read_excel('path_to_file.xls', Sheet1', parse_cols=[0, 2, 3], index_col=None, na_values=['NA'])
+   read_excel('path_to_file.xls', 'Sheet1', parse_cols=[0, 2, 3], index_col=None, na_values=['NA'])
 
 To write a DataFrame object to a sheet of an Excel file, you can use the
 ``to_excel`` instance method.  The arguments are largely the same as ``to_csv``
@@ -1664,7 +1681,7 @@ written.  For example:
 
 .. code-block:: python
 
-   df.to_excel('path_to_file.xlsx', sheet_name='sheet1')
+   df.to_excel('path_to_file.xlsx', sheet_name='Sheet1')
 
 Files with a ``.xls`` extension will be written using ``xlwt`` and those with
 a ``.xlsx`` extension will be written using ``openpyxl``.
@@ -1672,14 +1689,13 @@ The Panel class also has a ``to_excel`` instance method,
 which writes each DataFrame in the Panel to a separate sheet.
 
 In order to write separate DataFrames to separate sheets in a single Excel file,
-one can use the ExcelWriter class, as in the following example:
+one can pass an :class:`~pandas.io.excel.ExcelWriter`.
 
 .. code-block:: python
 
-   writer = ExcelWriter('path_to_file.xlsx')
-   df1.to_excel(writer, sheet_name='sheet1')
-   df2.to_excel(writer, sheet_name='sheet2')
-   writer.save()
+   with ExcelWriter('path_to_file.xlsx') as writer:
+       df1.to_excel(writer, sheet_name='Sheet1')
+       df2.to_excel(writer, sheet_name='Sheet2')
 
 .. _io.excel.writers:
 
@@ -1693,13 +1709,96 @@ Excel writer engines
 1. the ``engine`` keyword argument
 2. the filename extension (via the default specified in config options)
 
-``pandas`` only supports ``openpyxl`` for ``.xlsx`` and ``.xlsm`` files and
-``xlwt`` for ``.xls`` files.  If you have multiple engines installed, you can choose the
-engine to use by default via the options ``io.excel.xlsx.writer`` and
-``io.excel.xls.writer``.
+By default, ``pandas`` uses  `openpyxl <http://packages.python.org/openpyxl/>`__
+for ``.xlsx`` and ``.xlsm`` files and `xlwt <http://www.python-excel.org/>`__
+for ``.xls`` files.  If you have multiple engines installed, you can set the
+default engine through :ref:`setting the config options <basics.working_with_options>`
+``io.excel.xlsx.writer`` and ``io.excel.xls.writer``.
 
+For example if the `XlsxWriter <http://xlsxwriter.readthedocs.org>`__
+module is installed you can use it as a xlsx writer engine as follows:
+
+.. code-block:: python
+
+   # By setting the 'engine' in the DataFrame and Panel 'to_excel()' methods.
+   df.to_excel('path_to_file.xlsx', sheet_name='Sheet1', engine='xlsxwriter')
+
+   # By setting the 'engine' in the ExcelWriter constructor.
+   writer = ExcelWriter('path_to_file.xlsx', engine='xlsxwriter')
+
+   # Or via pandas configuration.
+   from pandas import options
+   options.io.excel.xlsx.writer = 'xlsxwriter'
+
+   df.to_excel('path_to_file.xlsx', sheet_name='Sheet1')
 
 .. _io.hdf5:
+
+Serialization
+-------------
+
+msgpack (experimental)
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. _io.msgpack:
+
+.. versionadded:: 0.13.0
+
+Starting in 0.13.0, pandas is supporting the ``msgpack`` format for
+object serialization. This is a lightweight portable binary format, similar
+to binary JSON, that is highly space efficient, and provides good performance
+both on the writing (serialization), and reading (deserialization).
+
+.. warning::
+
+   This is a very new feature of pandas. We intend to provide certain
+   optimizations in the io of the ``msgpack`` data. Since this is marked
+   as an EXPERIMENTAL LIBRARY, the storage format may not be stable until a future release.
+
+.. ipython:: python
+
+   df = DataFrame(np.random.rand(5,2),columns=list('AB'))
+   df.to_msgpack('foo.msg')
+   pd.read_msgpack('foo.msg')
+   s = Series(np.random.rand(5),index=date_range('20130101',periods=5))
+
+You can pass a list of objects and you will receive them back on deserialization.
+
+.. ipython:: python
+
+   pd.to_msgpack('foo.msg', df, 'foo', np.array([1,2,3]), s)
+   pd.read_msgpack('foo.msg')
+
+You can pass ``iterator=True`` to iterate over the unpacked results
+
+.. ipython:: python
+
+   for o in pd.read_msgpack('foo.msg',iterator=True):
+       print o
+
+You can pass ``append=True`` to the writer to append to an existing pack
+
+.. ipython:: python
+
+   df.to_msgpack('foo.msg',append=True)
+   pd.read_msgpack('foo.msg')
+
+Unlike other io methods, ``to_msgpack`` is available on both a per-object basis,
+``df.to_msgpack()`` and using the top-level ``pd.to_msgpack(...)`` where you
+can pack arbitrary collections of python lists, dicts, scalars, while intermixing
+pandas objects.
+
+.. ipython:: python
+
+   pd.to_msgpack('foo2.msg', { 'dict' : [ { 'df' : df }, { 'string' : 'foo' }, { 'scalar' : 1. }, { 's' : s } ] })
+   pd.read_msgpack('foo2.msg')
+
+.. ipython:: python
+   :suppress:
+   :okexcept:
+
+   os.remove('foo.msg')
+   os.remove('foo2.msg')
 
 HDF5 (PyTables)
 ---------------
@@ -1725,7 +1824,7 @@ for some advanced strategies
 .. ipython:: python
 
    store = HDFStore('store.h5')
-   print store
+   print(store)
 
 Objects can be written to the file just like adding key-value pairs to a
 dict:
@@ -2188,7 +2287,7 @@ The default is 50,000 rows returned in a chunk.
 .. ipython:: python
 
    for df in store.select('df', chunksize=3):
-      print df
+      print(df)
 
 .. note::
 
@@ -2200,7 +2299,7 @@ The default is 50,000 rows returned in a chunk.
    .. code-block:: python
 
       for df in read_hdf('store.h5','df', chunsize=3):
-          print df
+          print(df)
 
 Note, that the chunksize keyword applies to the **returned** rows. So if you
 are doing a query, then that set will be subdivided and returned in the
@@ -2749,7 +2848,7 @@ Writing to STATA format
 .. _io.stata_writer:
 
 The method :func:`~pandas.core.frame.DataFrame.to_stata` will write a DataFrame
-into a .dta file. The format version of this file is always the latest one, 115.
+into a .dta file. The format version of this file is always 115 (Stata 12).
 
 .. ipython:: python
 
@@ -2781,7 +2880,7 @@ read and used to create a ``Categorical`` variable from them. Value labels can
 also be retrieved by the function ``variable_labels``, which requires data to be
 called before (see ``pandas.io.stata.StataReader``).
 
-The StataReader supports .dta Formats 104, 105, 108, 113-115.
+The StataReader supports .dta Formats 104, 105, 108, 113-115 and 117.
 Alternatively, the function :func:`~pandas.io.stata.read_stata` can be used
 
 .. ipython:: python

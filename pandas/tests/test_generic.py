@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from pandas import (Index, Series, DataFrame, Panel,
-                    isnull, notnull,date_range)
+                    isnull, notnull,date_range, _np_version_under1p7)
 from pandas.core.index import Index, MultiIndex
 from pandas.tseries.index import Timestamp, DatetimeIndex
 
@@ -118,6 +118,7 @@ class Generic(object):
         self._compare(result, o)
 
         # _get_numeric_data is includes _get_bool_data, so can't test for non-inclusion
+
     def test_nonzero(self):
 
         # GH 4633
@@ -153,6 +154,20 @@ class Generic(object):
         self.assertRaises(ValueError, lambda : obj1 and obj2)
         self.assertRaises(ValueError, lambda : obj1 or obj2)
         self.assertRaises(ValueError, lambda : not obj1)
+
+    def test_numpy_1_7_compat_numeric_methods(self):
+        if _np_version_under1p7:
+            raise nose.SkipTest("numpy < 1.7")
+
+        # GH 4435
+        # numpy in 1.7 tries to pass addtional arguments to pandas functions
+
+        o = self._construct(shape=4)
+        for op in ['min','max','max','var','std','prod','sum','cumsum','cumprod',
+                   'median','skew','kurt','compound','cummax','cummin','all','any']:
+            f = getattr(np,op,None)
+            if f is not None:
+                f(o)
 
 class TestSeries(unittest.TestCase, Generic):
     _typ = Series
@@ -190,11 +205,31 @@ class TestSeries(unittest.TestCase, Generic):
 
     def test_nonzero_single_element(self):
 
+        # allow single item via bool method
         s = Series([True])
-        self.assertRaises(ValueError, lambda : bool(s))
+        self.assert_(s.bool() is True)
 
         s = Series([False])
-        self.assertRaises(ValueError, lambda : bool(s))
+        self.assert_(s.bool() is False)
+
+        # single item nan to raise
+        for s in [ Series([np.nan]), Series([pd.NaT]), Series([True]), Series([False]) ]:
+            self.assertRaises(ValueError, lambda : bool(s))
+
+        for s in [ Series([np.nan]), Series([pd.NaT])]:
+            self.assertRaises(ValueError, lambda : s.bool())
+
+        # multiple bool are still an error
+        for s in [Series([True,True]), Series([False, False])]:
+            self.assertRaises(ValueError, lambda : bool(s))
+            self.assertRaises(ValueError, lambda : s.bool())
+
+        # single non-bool are an error
+        for s in [Series([1]), Series([0]),
+                  Series(['a']), Series([0.0])]:
+                self.assertRaises(ValueError, lambda : bool(s))
+                self.assertRaises(ValueError, lambda : s.bool())
+
 
 class TestDataFrame(unittest.TestCase, Generic):
     _typ = DataFrame
@@ -204,6 +239,19 @@ class TestDataFrame(unittest.TestCase, Generic):
         df = DataFrame([11,21,31],
                        index=MultiIndex.from_tuples([("A",x) for x in ["a","B","c"]]))
         result = df.rename(str.lower)
+
+    def test_nonzero_single_element(self):
+
+        # allow single item via bool method
+        df = DataFrame([[True]])
+        self.assert_(df.bool() is True)
+
+        df = DataFrame([[False]])
+        self.assert_(df.bool() is False)
+
+        df = DataFrame([[False, False]])
+        self.assertRaises(ValueError, lambda : df.bool())
+        self.assertRaises(ValueError, lambda : bool(df))
 
     def test_get_numeric_data_preserve_dtype(self):
 

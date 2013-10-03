@@ -18,6 +18,8 @@ from distutils.version import LooseVersion
 from numpy.random import randn, rand
 import numpy as np
 
+import nose
+
 from pandas.core.common import isnull, _is_sequence
 import pandas.core.index as index
 import pandas.core.series as series
@@ -69,6 +71,31 @@ def choice(x, size=10):
         return np.random.choice(x, size=size)
     except AttributeError:
         return np.random.randint(len(x), size=size).choose(x)
+
+
+def close(fignum=None):
+    from matplotlib.pyplot import get_fignums, close as _close
+
+    if fignum is None:
+        for fignum in get_fignums():
+            _close(fignum)
+    else:
+        _close(fignum)
+
+
+def mplskip(cls):
+    """Skip a TestCase instance if matplotlib isn't installed"""
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import matplotlib as mpl
+            mpl.use("Agg", warn=False)
+        except ImportError:
+            raise nose.SkipTest("matplotlib not installed")
+
+    cls.setUpClass = setUpClass
+    return cls
+
 
 #------------------------------------------------------------------------------
 # Console debugging tools
@@ -366,23 +393,36 @@ def getCols(k):
     return string.ascii_uppercase[:k]
 
 
-def makeStringIndex(k):
+# make index
+def makeStringIndex(k=10):
     return Index([rands(10) for _ in range(k)])
 
 
-def makeUnicodeIndex(k):
+def makeUnicodeIndex(k=10):
     return Index([randu(10) for _ in range(k)])
 
 
-def makeIntIndex(k):
+def makeIntIndex(k=10):
     return Index(lrange(k))
 
 
-def makeFloatIndex(k):
+def makeFloatIndex(k=10):
     values = sorted(np.random.random_sample(k)) - np.random.random_sample(1)
     return Index(values * (10 ** np.random.randint(0, 9)))
 
+def makeDateIndex(k=10):
+    dt = datetime(2000, 1, 1)
+    dr = bdate_range(dt, periods=k)
+    return DatetimeIndex(dr)
 
+
+def makePeriodIndex(k=10):
+    dt = datetime(2000, 1, 1)
+    dr = PeriodIndex(start=dt, periods=k, freq='B')
+    return dr
+
+
+# make series
 def makeFloatSeries():
     index = makeStringIndex(N)
     return Series(randn(N), index=index)
@@ -403,41 +443,6 @@ def makeObjectSeries():
 def getSeriesData():
     index = makeStringIndex(N)
     return dict((c, Series(randn(N), index=index)) for c in getCols(K))
-
-
-def makeDataFrame():
-    data = getSeriesData()
-    return DataFrame(data)
-
-
-def getArangeMat():
-    return np.arange(N * K).reshape((N, K))
-
-
-def getMixedTypeDict():
-    index = Index(['a', 'b', 'c', 'd', 'e'])
-
-    data = {
-        'A': [0., 1., 2., 3., 4.],
-        'B': [0., 1., 0., 1., 0.],
-        'C': ['foo1', 'foo2', 'foo3', 'foo4', 'foo5'],
-        'D': bdate_range('1/1/2009', periods=5)
-    }
-
-    return index, data
-
-
-def makeDateIndex(k):
-    dt = datetime(2000, 1, 1)
-    dr = bdate_range(dt, periods=k)
-    return DatetimeIndex(dr)
-
-
-def makePeriodIndex(k):
-    dt = datetime(2000, 1, 1)
-    dr = PeriodIndex(start=dt, periods=k, freq='B')
-    return dr
-
 
 def makeTimeSeries(nper=None):
     if nper is None:
@@ -462,6 +467,28 @@ def makeTimeDataFrame(nper=None):
 
 def getPeriodData(nper=None):
     return dict((c, makePeriodSeries(nper)) for c in getCols(K))
+
+# make frame
+def makeDataFrame():
+    data = getSeriesData()
+    return DataFrame(data)
+
+
+def getArangeMat():
+    return np.arange(N * K).reshape((N, K))
+
+
+def getMixedTypeDict():
+    index = Index(['a', 'b', 'c', 'd', 'e'])
+
+    data = {
+        'A': [0., 1., 2., 3., 4.],
+        'B': [0., 1., 0., 1., 0.],
+        'C': ['foo1', 'foo2', 'foo3', 'foo4', 'foo5'],
+        'D': bdate_range('1/1/2009', periods=5)
+    }
+
+    return index, data
 
 
 def makePeriodFrame(nper=None):

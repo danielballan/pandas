@@ -12,7 +12,8 @@ import os
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from pandas.core.index import Index, Int64Index, MultiIndex, InvalidIndexError
+from pandas.core.index import (Index, Float64Index, Int64Index, MultiIndex,
+                               InvalidIndexError)
 from pandas.core.frame import DataFrame
 from pandas.core.series import Series
 from pandas.util.testing import (assert_almost_equal, assertRaisesRegexp,
@@ -27,6 +28,8 @@ import pandas.tseries.offsets as offsets
 
 import pandas as pd
 from pandas.lib import Timestamp
+
+from pandas import _np_version_under1p7
 
 
 class TestIndex(unittest.TestCase):
@@ -75,7 +78,10 @@ class TestIndex(unittest.TestCase):
         self.assertEqual(ind.names, [name])
 
     def test_hash_error(self):
-        self.assertRaises(TypeError, hash, self.strIndex)
+        with tm.assertRaisesRegexp(TypeError,
+                                   "unhashable type: %r" %
+                                   type(self.strIndex).__name__):
+            hash(self.strIndex)
 
     def test_new_axis(self):
         new_index = self.dateIndex[None, :]
@@ -192,6 +198,29 @@ class TestIndex(unittest.TestCase):
         i2 = i2.rename('foo')
         self.assert_(i1.identical(i2))
 
+    def test_is_(self):
+        ind = Index(range(10))
+        self.assertTrue(ind.is_(ind))
+        self.assertTrue(ind.is_(ind.view().view().view().view()))
+        self.assertFalse(ind.is_(Index(range(10))))
+        self.assertFalse(ind.is_(ind.copy()))
+        self.assertFalse(ind.is_(ind.copy(deep=False)))
+        self.assertFalse(ind.is_(ind[:]))
+        self.assertFalse(ind.is_(ind.view(np.ndarray).view(Index)))
+        self.assertFalse(ind.is_(np.array(range(10))))
+        # quasi-implementation dependent
+        self.assertTrue(ind.is_(ind.view().base))
+        ind2 = ind.view()
+        ind2.name = 'bob'
+        self.assertTrue(ind.is_(ind2))
+        self.assertTrue(ind2.is_(ind))
+        # doesn't matter if Indices are *actually* views of underlying data,
+        self.assertFalse(ind.is_(Index(ind.values)))
+        arr = np.array(range(1, 11))
+        ind1 = Index(arr, copy=False)
+        ind2 = Index(arr, copy=False)
+        self.assertFalse(ind1.is_(ind2))
+
     def test_asof(self):
         d = self.dateIndex[0]
         self.assert_(self.dateIndex.asof(d) is d)
@@ -202,6 +231,25 @@ class TestIndex(unittest.TestCase):
 
         d = self.dateIndex[0].to_datetime()
         tm.assert_isinstance(self.dateIndex.asof(d), Timestamp)
+
+    def test_nanosecond_index_access(self):
+        if _np_version_under1p7:
+            import nose
+
+            raise nose.SkipTest('numpy >= 1.7 required')
+
+        from pandas import Series, Timestamp, DatetimeIndex
+
+        s = Series([Timestamp('20130101')]).values.view('i8')[0]
+        r = DatetimeIndex([s + 50 + i for i in range(100)])
+        x = Series(np.random.randn(100), index=r)
+
+        first_value = x.asof(x.index[0])
+
+        # this does not yet work, as parsing strings is done via dateutil
+        #self.assertEqual(first_value, x['2013-01-01 00:00:00.000000050+0000'])
+
+        self.assertEqual(first_value, x[Timestamp(np.datetime64('2013-01-01 00:00:00.000000050+0000', 'ns'))])
 
     def test_argsort(self):
         result = self.strIndex.argsort()
@@ -359,6 +407,14 @@ class TestIndex(unittest.TestCase):
         self.assert_('a' not in index2)
         self.assert_('afoo' in index2)
 
+    def test_iadd_string(self):
+        index = pd.Index(['a', 'b', 'c'])
+        # doesn't fail test unless there is a check before `+=`
+        self.assert_('a' in index)
+
+        index += '_x'
+        self.assert_('a_x' in index)
+
     def test_diff(self):
         first = self.strIndex[5:20]
         second = self.strIndex[:10]
@@ -419,7 +475,7 @@ class TestIndex(unittest.TestCase):
     def test_summary(self):
         self._check_method_works(Index.summary)
         # GH3869
-        ind = Index(['{other}%s',"~:{range}:0"], name='A')
+        ind = Index(['{other}%s', "~:{range}:0"], name='A')
         result = ind.summary()
         # shouldn't be formatted accidentally.
         self.assert_('~:{range}:0' in result)
@@ -631,6 +687,95 @@ class TestIndex(unittest.TestCase):
                 self.assert_(res is joined)
 
 
+class TestFloat64Index(unittest.TestCase):
+    _multiprocess_can_split_ = True
+
+    def setUp(self):
+        self.mixed = Float64Index([1.5, 2, 3, 4, 5])
+        self.float = Float64Index(np.arange(5) * 2.5)
+
+    def test_hash_error(self):
+        with tm.assertRaisesRegexp(TypeError,
+                                   "unhashable type: %r" %
+                                   type(self.float).__name__):
+            hash(self.float)
+
+    def check_is_index(self, i):
+        self.assert_(isinstance(i, Index) and not isinstance(i, Float64Index))
+
+    def check_coerce(self, a, b, is_float_index=True):
+        self.assert_(a.equals(b))
+        if is_float_index:
+            self.assert_(isinstance(b, Float64Index))
+        else:
+            self.check_is_index(b)
+
+    def test_constructor(self):
+
+        # explicit construction
+        index = Float64Index([1,2,3,4,5])
+        self.assert_(isinstance(index, Float64Index))
+        self.assert_((index.values == np.array([1,2,3,4,5],dtype='float64')).all())
+        index = Float64Index(np.array([1,2,3,4,5]))
+        self.assert_(isinstance(index, Float64Index))
+        index = Float64Index([1.,2,3,4,5])
+        self.assert_(isinstance(index, Float64Index))
+        index = Float64Index(np.array([1.,2,3,4,5]))
+        self.assert_(isinstance(index, Float64Index))
+        self.assert_(index.dtype == object)
+
+        index = Float64Index(np.array([1.,2,3,4,5]),dtype=np.float32)
+        self.assert_(isinstance(index, Float64Index))
+        self.assert_(index.dtype == object)
+
+        index = Float64Index(np.array([1,2,3,4,5]),dtype=np.float32)
+        self.assert_(isinstance(index, Float64Index))
+        self.assert_(index.dtype == object)
+
+        # nan handling
+        result = Float64Index([np.nan, np.nan])
+        self.assert_(pd.isnull(result.values).all())
+        result = Float64Index(np.array([np.nan]))
+        self.assert_(pd.isnull(result.values).all())
+        result = Index(np.array([np.nan]))
+        self.assert_(pd.isnull(result.values).all())
+
+    def test_constructor_invalid(self):
+
+        # invalid
+        self.assertRaises(TypeError, Float64Index, 0.)
+        self.assertRaises(TypeError, Float64Index, ['a','b',0.])
+        self.assertRaises(TypeError, Float64Index, [Timestamp('20130101')])
+
+    def test_constructor_coerce(self):
+
+        self.check_coerce(self.mixed,Index([1.5, 2, 3, 4, 5]))
+        self.check_coerce(self.float,Index(np.arange(5) * 2.5))
+        self.check_coerce(self.float,Index(np.array(np.arange(5) * 2.5, dtype=object)))
+
+    def test_constructor_explicit(self):
+
+        # these don't auto convert
+        self.check_coerce(self.float,Index((np.arange(5) * 2.5), dtype=object),
+                          is_float_index=False)
+        self.check_coerce(self.mixed,Index([1.5, 2, 3, 4, 5],dtype=object),
+                          is_float_index=False)
+
+    def test_astype(self):
+
+        result = self.float.astype(object)
+        self.assert_(result.equals(self.float))
+        self.assert_(self.float.equals(result))
+        self.check_is_index(result)
+
+        i = self.mixed.copy()
+        i.name = 'foo'
+        result = i.astype(object)
+        self.assert_(result.equals(i))
+        self.assert_(i.equals(result))
+        self.check_is_index(result)
+
+
 class TestInt64Index(unittest.TestCase):
     _multiprocess_can_split_ = True
 
@@ -653,7 +798,7 @@ class TestInt64Index(unittest.TestCase):
         self.assert_(np.array_equal(index, expected))
 
         # scalar raise Exception
-        self.assertRaises(ValueError, Int64Index, 5)
+        self.assertRaises(TypeError, Int64Index, 5)
 
         # copy
         arr = self.index.values
@@ -673,6 +818,12 @@ class TestInt64Index(unittest.TestCase):
         # preventing casting
         arr = np.array([1, '2', 3, '4'], dtype=object)
         self.assertRaises(TypeError, Int64Index, arr)
+
+    def test_hash_error(self):
+        with tm.assertRaisesRegexp(TypeError,
+                                   "unhashable type: %r" %
+                                   type(self.index).__name__):
+            hash(self.index)
 
     def test_copy(self):
         i = Int64Index([], name='Foo')
@@ -1050,6 +1201,12 @@ class TestMultiIndex(unittest.TestCase):
                                 labels=[major_labels, minor_labels],
                                 names=self.index_names)
 
+    def test_hash_error(self):
+        with tm.assertRaisesRegexp(TypeError,
+                                   "unhashable type: %r" %
+                                   type(self.index).__name__):
+            hash(self.index)
+
     def test_set_names_and_rename(self):
         # so long as these are synonyms, we don't need to test set_names
         self.assert_(self.index.rename == self.index.set_names)
@@ -1160,8 +1317,8 @@ class TestMultiIndex(unittest.TestCase):
         assert_copy(actual.labels, expected.labels)
         self.check_level_names(actual, expected.names)
 
-        assertRaisesRegexp(TypeError, "^Setting.*dtype.*object", self.index.astype, np.dtype(int))
-
+        with assertRaisesRegexp(TypeError, "^Setting.*dtype.*object"):
+            self.index.astype(np.dtype(int))
 
     def test_constructor_single_level(self):
         single_level = MultiIndex(levels=[['foo', 'bar', 'baz', 'qux']],
@@ -1207,7 +1364,6 @@ class TestMultiIndex(unittest.TestCase):
         i_copy = self.index.copy()
 
         self.assert_multiindex_copied(i_copy, self.index)
-
 
     def test_shallow_copy(self):
         i_copy = self.index._shallow_copy()
@@ -1310,7 +1466,7 @@ class TestMultiIndex(unittest.TestCase):
 
     def test_legacy_pickle(self):
         if compat.PY3:
-            raise nose.SkipTest
+            raise nose.SkipTest("doesn't work on Python 3")
 
         def curpath():
             pth, _ = os.path.split(os.path.abspath(__file__))
@@ -1475,10 +1631,11 @@ class TestMultiIndex(unittest.TestCase):
         df = tm.makeCustomDataframe(5, 5)
         stacked = df.stack()
         idx = stacked.index
-        assertRaisesRegexp(TypeError, '^Level type mismatch', idx.slice_locs, timedelta(seconds=30))
+        with assertRaisesRegexp(TypeError, '^Level type mismatch'):
+            idx.slice_locs(timedelta(seconds=30))
         # TODO: Try creating a UnicodeDecodeError in exception message
-        assertRaisesRegexp(TypeError, '^Level type mismatch', idx.slice_locs,
-                           df.index[1], (16, "a"))
+        with assertRaisesRegexp(TypeError, '^Level type mismatch'):
+            idx.slice_locs(df.index[1], (16, "a"))
 
     def test_slice_locs_not_sorted(self):
         index = MultiIndex(levels=[Index(lrange(4)),
@@ -1650,7 +1807,7 @@ class TestMultiIndex(unittest.TestCase):
         warnings.filterwarnings('ignore',
                                 category=FutureWarning,
                                 module=".*format")
-        # #1538
+        # GH1538
         pd.set_option('display.multi_sparse', False)
 
         result = self.index.format()
@@ -1712,12 +1869,35 @@ class TestMultiIndex(unittest.TestCase):
         mi2 = self.index.copy()
         self.assert_(mi.identical(mi2))
 
-        mi = mi.set_names(['new1','new2'])
+        mi = mi.set_names(['new1', 'new2'])
         self.assert_(mi.equals(mi2))
         self.assert_(not mi.identical(mi2))
 
-        mi2 = mi2.set_names(['new1','new2'])
+        mi2 = mi2.set_names(['new1', 'new2'])
         self.assert_(mi.identical(mi2))
+
+    def test_is_(self):
+        mi = MultiIndex.from_tuples(lzip(range(10), range(10)))
+        self.assertTrue(mi.is_(mi))
+        self.assertTrue(mi.is_(mi.view()))
+        self.assertTrue(mi.is_(mi.view().view().view().view()))
+        mi2 = mi.view()
+        # names are metadata, they don't change id
+        mi2.names = ["A", "B"]
+        self.assertTrue(mi2.is_(mi))
+        self.assertTrue(mi.is_(mi2))
+        self.assertTrue(mi.is_(mi.set_names(["C", "D"])))
+        # levels are inherent properties, they change identity
+        mi3 = mi2.set_levels([lrange(10), lrange(10)])
+        self.assertFalse(mi3.is_(mi2))
+        # shouldn't change
+        self.assertTrue(mi2.is_(mi))
+        mi4 = mi3.view()
+        mi4.set_levels([[1 for _ in range(10)], lrange(10)], inplace=True)
+        self.assertFalse(mi4.is_(mi3))
+        mi5 = mi.view()
+        mi5.set_levels(mi5.levels, inplace=True)
+        self.assertFalse(mi5.is_(mi))
 
     def test_union(self):
         piece1 = self.index[:5][::-1]
@@ -1832,7 +2012,7 @@ class TestMultiIndex(unittest.TestCase):
         expected.names = first.names
         self.assertEqual(first.names, result.names)
         assertRaisesRegexp(TypeError, "other must be a MultiIndex or a list"
-                           " of tuples", first.diff, [1,2,3,4,5])
+                           " of tuples", first.diff, [1, 2, 3, 4, 5])
 
     def test_from_tuples(self):
         assertRaisesRegexp(TypeError, 'Cannot infer number of levels from'
@@ -2070,9 +2250,10 @@ class TestMultiIndex(unittest.TestCase):
         self.assertEqual(result, exp)
 
     def test_repr_with_unicode_data(self):
-        d = {"a": [u("\u05d0"), 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]}
-        index = pd.DataFrame(d).set_index(["a", "b"]).index
-        self.assertFalse("\\u" in repr(index))  # we don't want unicode-escaped
+        with pd.core.config.option_context("display.encoding",'UTF-8'):
+            d = {"a": [u("\u05d0"), 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]}
+            index = pd.DataFrame(d).set_index(["a", "b"]).index
+            self.assertFalse("\\u" in repr(index))  # we don't want unicode-escaped
 
     def test_unicode_string_with_unicode(self):
         d = {"a": [u("\u05d0"), 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]}
@@ -2102,6 +2283,7 @@ def test_get_combined_index():
     from pandas.core.index import _get_combined_index
     result = _get_combined_index([])
     assert(result.equals(Index([])))
+
 
 if __name__ == '__main__':
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],

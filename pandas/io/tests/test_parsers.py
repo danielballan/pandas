@@ -8,9 +8,11 @@ import sys
 import re
 import unittest
 import nose
+import platform
 
 from numpy import nan
 import numpy as np
+from pandas.io.common import DtypeWarning
 
 from pandas import DataFrame, Series, Index, MultiIndex, DatetimeIndex
 from pandas.compat import(
@@ -63,6 +65,10 @@ bar2,12,13,14,15
         self.csv1 = os.path.join(self.dirpath, 'test1.csv')
         self.csv2 = os.path.join(self.dirpath, 'test2.csv')
         self.xls1 = os.path.join(self.dirpath, 'test.xls')
+
+    def test_converters_type_must_be_dict(self):
+        with tm.assertRaisesRegexp(TypeError, 'Type converters.+'):
+            self.read_csv(StringIO(self.data1), converters=0)
 
     def test_multi_character_decimal_marker(self):
         data = """A|B|C
@@ -231,6 +237,18 @@ index2,b,d,f
         tm.assert_frame_equal(df, expected)
 
         df = self.read_table(StringIO(data_with_odd_sep), sep='|', thousands='.', decimal=',')
+        tm.assert_frame_equal(df, expected)
+
+    def test_separator_date_conflict(self):
+        # Regression test for issue #4678: make sure thousands separator and
+        # date parsing do not conflict.
+        data = '06-02-2013;13:00;1-000.215'
+        expected = DataFrame(
+            [[datetime(2013, 6, 2, 13, 0, 0), 1000.215]],
+            columns=['Date', 2]
+        )
+
+        df = self.read_csv(StringIO(data), sep=';', thousands='-', parse_dates={'Date': [0, 1]}, header=None)
         tm.assert_frame_equal(df, expected)
 
     def test_squeeze(self):
@@ -734,6 +752,16 @@ ignore,this,row
         expected.index.name = 0
         tm.assert_frame_equal(data, expected)
         tm.assert_frame_equal(data, data2)
+
+    def test_deep_skiprows(self):
+        # GH #4382
+        text = "a,b,c\n" + "\n".join([",".join([str(i), str(i+1), str(i+2)]) for i in range(10)])
+        condensed_text = "a,b,c\n" + "\n".join([",".join([str(i), str(i+1), str(i+2)]) for i in [0, 1, 2, 3, 4, 6, 8, 9]])
+        data = self.read_csv(StringIO(text), skiprows=[6, 8])
+        condensed_data = self.read_csv(StringIO(condensed_text))
+        tm.assert_frame_equal(data, condensed_data)
+
+
 
     def test_detect_string_na(self):
         data = """A,B
@@ -1472,28 +1500,17 @@ a,b,c,d
         df = self.read_csv(StringIO(data), na_values={}, index_col=['a', 'c'])
         tm.assert_frame_equal(df, xp)
 
-    @slow
     @tm.network
     def test_url(self):
-        try:
-            # HTTP(S)
-            url = ('https://raw.github.com/pydata/pandas/master/'
-                   'pandas/io/tests/data/salary.table')
-            url_table = self.read_table(url)
-            dirpath = tm.get_data_path()
-            localtable = os.path.join(dirpath, 'salary.table')
-            local_table = self.read_table(localtable)
-            tm.assert_frame_equal(url_table, local_table)
-            # TODO: ftp testing
-
-        except URLError:
-            try:
-                with tm.closing(urlopen('http://www.google.com')) as resp:
-                    pass
-            except URLError:
-                raise nose.SkipTest
-            else:
-                raise
+        # HTTP(S)
+        url = ('https://raw.github.com/pydata/pandas/master/'
+                'pandas/io/tests/data/salary.table')
+        url_table = self.read_table(url)
+        dirpath = tm.get_data_path()
+        localtable = os.path.join(dirpath, 'salary.table')
+        local_table = self.read_table(localtable)
+        tm.assert_frame_equal(url_table, local_table)
+        # TODO: ftp testing
 
     @slow
     def test_file(self):
@@ -1509,7 +1526,8 @@ a,b,c,d
             url_table = self.read_table('file://localhost/' + localtable)
         except URLError:
             # fails on some systems
-            raise nose.SkipTest
+            raise nose.SkipTest("failing on %s" %
+                                ' '.join(platform.uname()).strip())
 
         tm.assert_frame_equal(url_table, local_table)
 
@@ -1688,9 +1706,10 @@ A,B,C
             self.assertEquals(len(result), 50)
 
     def test_converters_corner_with_nas(self):
-      # skip aberration observed on Win64 Python 3.2.2
+        # skip aberration observed on Win64 Python 3.2.2
         if hash(np.int64(-1)) != -2:
-            raise nose.SkipTest
+            raise nose.SkipTest("skipping because of windows hash on Python"
+                                " 3.2.2")
 
         csv = """id,score,days
 1,2,12
@@ -1845,8 +1864,67 @@ A,B,C
 
         self.assertTrue(np.array_equal(result['Numbers'], expected['Numbers']))
 
+    def test_usecols_index_col_conflict(self):
+        # Issue 4201  Test that index_col as integer reflects usecols
+        data = """SecId,Time,Price,P2,P3
+10000,2013-5-11,100,10,1
+500,2013-5-12,101,11,1
+"""
+        expected = DataFrame({'Price': [100, 101]}, index=[datetime(2013, 5, 11), datetime(2013, 5, 12)])
+        expected.index.name = 'Time'
+
+        df = pd.read_csv(StringIO(data), usecols=['Time', 'Price'], parse_dates=True, index_col=0)
+        tm.assert_frame_equal(expected, df)
+
+        df = pd.read_csv(StringIO(data), usecols=['Time', 'Price'], parse_dates=True, index_col='Time')
+        tm.assert_frame_equal(expected, df)
+
+        df = pd.read_csv(StringIO(data), usecols=[1, 2], parse_dates=True, index_col='Time')
+        tm.assert_frame_equal(expected, df)
+
+        df = pd.read_csv(StringIO(data), usecols=[1, 2], parse_dates=True, index_col=0)
+        tm.assert_frame_equal(expected, df)
+
+        expected = DataFrame({'P3': [1, 1], 'Price': (100, 101), 'P2': (10, 11)})
+        expected = expected.set_index(['Price', 'P2'])
+        df = pd.read_csv(StringIO(data), usecols=['Price', 'P2', 'P3'], parse_dates=True, index_col=['Price', 'P2'])
+        tm.assert_frame_equal(expected, df)
+
+    def test_chunks_have_consistent_numerical_type(self):
+        integers = [str(i) for i in range(499999)]
+        data = "a\n" + "\n".join(integers + ["1.0", "2.0"] + integers)
+
+        with tm.assert_produces_warning(False):
+            df = self.read_csv(StringIO(data))
+        self.assertTrue(type(df.a[0]) is np.float64)  # Assert that types were coerced.
+        self.assertEqual(df.a.dtype, np.float)
+
+    def test_warn_if_chunks_have_mismatched_type(self):
+        # See test in TestCParserLowMemory.
+        integers = [str(i) for i in range(499999)]
+        data = "a\n" + "\n".join(integers + ['a', 'b'] + integers)
+
+        with tm.assert_produces_warning(False):
+            df = self.read_csv(StringIO(data))
+        self.assertEqual(df.a.dtype, np.object)
+
 
 class TestPythonParser(ParserTests, unittest.TestCase):
+    def test_negative_skipfooter_raises(self):
+        text = """#foo,a,b,c
+#foo,a,b,c
+#foo,a,b,c
+#foo,a,b,c
+#foo,a,b,c
+#foo,a,b,c
+1/1/2000,1.,2.,3.
+1/2/2000,4,5,6
+1/3/2000,7,8,9
+"""
+
+        with tm.assertRaisesRegexp(ValueError,
+                                   'skip footer cannot be negative'):
+            df = self.read_csv(StringIO(text), skipfooter=-1)
 
     def read_csv(self, *args, **kwds):
         kwds = kwds.copy()
@@ -2000,7 +2078,19 @@ c   1   2   3   4
             read_fwf(StringIO(data3), colspecs=colspecs, widths=[6, 10, 10, 7])
 
         with tm.assertRaisesRegexp(ValueError, "Must specify either"):
-            read_fwf(StringIO(data3))
+            read_fwf(StringIO(data3), colspecs=None, widths=None)
+
+    def test_fwf_colspecs_is_list_or_tuple(self):
+        with tm.assertRaisesRegexp(TypeError,
+                                   'column specifications must be a list or '
+                                   'tuple.+'):
+            pd.io.parsers.FixedWidthReader(StringIO(self.data1),
+                                           {'a': 1}, ',', '#')
+
+    def test_fwf_colspecs_is_list_or_tuple_of_two_element_tuples(self):
+        with tm.assertRaisesRegexp(TypeError,
+                                   'Each column specification must be.+'):
+            read_fwf(StringIO(self.data1), [('a', 1)])
 
     def test_fwf_regression(self):
         # GH 3594
@@ -2109,7 +2199,7 @@ eight,1,2,3"""
 
     def test_iteration_open_handle(self):
         if PY3:
-            raise nose.SkipTest
+            raise nose.SkipTest("won't work in Python 3 {0}".format(sys.version_info))
 
         with tm.ensure_clean() as path:
             with open(path, 'wb') as f:
@@ -2132,6 +2222,107 @@ eight,1,2,3"""
 
                 expected = Series(['DDD', 'EEE', 'FFF', 'GGG'])
                 tm.assert_series_equal(result, expected)
+
+
+class TestFwfColspaceSniffing(unittest.TestCase):
+    def test_full_file(self):
+        # File with all values
+        test = '''index                             A    B    C
+2000-01-03T00:00:00  0.980268513777    3  foo
+2000-01-04T00:00:00  1.04791624281    -4  bar
+2000-01-05T00:00:00  0.498580885705   73  baz
+2000-01-06T00:00:00  1.12020151869     1  foo
+2000-01-07T00:00:00  0.487094399463    0  bar
+2000-01-10T00:00:00  0.836648671666    2  baz
+2000-01-11T00:00:00  0.157160753327   34  foo'''
+        colspecs = ((0, 19), (21, 35), (38, 40), (42, 45))
+        expected = read_fwf(StringIO(test), colspecs=colspecs)
+        tm.assert_frame_equal(expected, read_fwf(StringIO(test)))
+
+    def test_full_file_with_missing(self):
+        # File with missing values
+        test = '''index                             A    B    C
+2000-01-03T00:00:00  0.980268513777    3  foo
+2000-01-04T00:00:00  1.04791624281    -4  bar
+                     0.498580885705   73  baz
+2000-01-06T00:00:00  1.12020151869     1  foo
+2000-01-07T00:00:00                    0  bar
+2000-01-10T00:00:00  0.836648671666    2  baz
+                                      34'''
+        colspecs = ((0, 19), (21, 35), (38, 40), (42, 45))
+        expected = read_fwf(StringIO(test), colspecs=colspecs)
+        tm.assert_frame_equal(expected, read_fwf(StringIO(test)))
+
+    def test_full_file_with_spaces(self):
+        # File with spaces in columns
+        test = '''
+Account                 Name  Balance     CreditLimit   AccountCreated
+101     Keanu Reeves          9315.45     10000.00           1/17/1998
+312     Gerard Butler         90.00       1000.00             8/6/2003
+868     Jennifer Love Hewitt  0           17000.00           5/25/1985
+761     Jada Pinkett-Smith    49654.87    100000.00          12/5/2006
+317     Bill Murray           789.65      5000.00             2/5/2007
+'''.strip('\r\n')
+        colspecs = ((0, 7), (8, 28), (30, 38), (42, 53), (56, 70))
+        expected = read_fwf(StringIO(test), colspecs=colspecs)
+        tm.assert_frame_equal(expected, read_fwf(StringIO(test)))
+
+    def test_full_file_with_spaces_and_missing(self):
+        # File with spaces and missing values in columsn
+        test = '''
+Account               Name    Balance     CreditLimit   AccountCreated
+101                           10000.00                       1/17/1998
+312     Gerard Butler         90.00       1000.00             8/6/2003
+868                                                          5/25/1985
+761     Jada Pinkett-Smith    49654.87    100000.00          12/5/2006
+317     Bill Murray           789.65
+'''.strip('\r\n')
+        colspecs = ((0, 7), (8, 28), (30, 38), (42, 53), (56, 70))
+        expected = read_fwf(StringIO(test), colspecs=colspecs)
+        tm.assert_frame_equal(expected, read_fwf(StringIO(test)))
+
+    def test_messed_up_data(self):
+        # Completely messed up file
+        test = '''
+   Account          Name             Balance     Credit Limit   Account Created
+       101                           10000.00                       1/17/1998
+       312     Gerard Butler         90.00       1000.00
+
+       761     Jada Pinkett-Smith    49654.87    100000.00          12/5/2006
+  317          Bill Murray           789.65
+'''.strip('\r\n')
+        colspecs = ((2, 10), (15, 33), (37, 45), (49, 61), (64, 79))
+        expected = read_fwf(StringIO(test), colspecs=colspecs)
+        tm.assert_frame_equal(expected, read_fwf(StringIO(test)))
+
+    def test_multiple_delimiters(self):
+        test = r'''
+col1~~~~~col2  col3++++++++++++++++++col4
+~~22.....11.0+++foo~~~~~~~~~~Keanu Reeves
+  33+++122.33\\\bar.........Gerard Butler
+++44~~~~12.01   baz~~Jennifer Love Hewitt
+~~55       11+++foo++++Jada Pinkett-Smith
+..66++++++.03~~~bar           Bill Murray
+'''.strip('\r\n')
+        colspecs = ((0, 4), (7, 13), (15, 19), (21, 41))
+        expected = read_fwf(StringIO(test), colspecs=colspecs,
+                            delimiter=' +~.\\')
+        tm.assert_frame_equal(expected, read_fwf(StringIO(test),
+                                                 delimiter=' +~.\\'))
+
+    def test_variable_width_unicode(self):
+        if not compat.PY3:
+            raise nose.SkipTest('Bytes-related test - only needs to work on Python 3')
+        test = '''
+שלום שלום
+ום   שלל
+של   ום
+'''.strip('\r\n')
+        expected = pd.read_fwf(BytesIO(test.encode('utf8')),
+                               colspecs=[(0, 4), (5, 9)], header=None)
+        tm.assert_frame_equal(expected, read_fwf(BytesIO(test.encode('utf8')),
+                                                 header=None))
+
 
 class TestCParserHighMemory(ParserTests, unittest.TestCase):
 
@@ -2281,7 +2472,6 @@ a,b,c
         self.assertTrue((result.dtypes == [object, np.int, np.float]).all())
         self.assertTrue((result2.dtypes == [object, np.float]).all())
 
-
     def test_usecols_implicit_index_col(self):
         # #2654
         data = 'a,b,c\n4,apple,bat,5.7\n8,orange,cow,10'
@@ -2325,7 +2515,7 @@ a,b,c
             import gzip
             import bz2
         except ImportError:
-            raise nose.SkipTest
+            raise nose.SkipTest('need gzip and bz2 to run')
 
         data = open(self.csv1, 'rb').read()
         expected = self.read_csv(self.csv1)
@@ -2360,7 +2550,7 @@ a,b,c
             import gzip
             import bz2
         except ImportError:
-            raise nose.SkipTest
+            raise nose.SkipTest('need gzip and bz2 to run')
 
         data = open(self.csv1, 'rb').read()
         data = data.replace(b',', b'::')
@@ -2508,16 +2698,22 @@ No,No,No"""
 
     def test_raise_on_no_columns(self):
         # single newline
-        data = """
-"""
+        data = "\n"
         self.assertRaises(ValueError, self.read_csv, StringIO(data))
 
         # test with more than a single newline
-        data = """
-
-
-"""
+        data = "\n\n\n"
         self.assertRaises(ValueError, self.read_csv, StringIO(data))
+
+    def test_warn_if_chunks_have_mismatched_type(self):
+        # Issue #3866 If chunks are different types and can't
+        # be coerced using numerical types, then issue warning.
+        integers = [str(i) for i in range(499999)]
+        data = "a\n" + "\n".join(integers + ['a', 'b'] + integers)
+
+        with tm.assert_produces_warning(DtypeWarning):
+            df = self.read_csv(StringIO(data))
+        self.assertEqual(df.a.dtype, np.object)
 
 
 class TestParseSQL(unittest.TestCase):

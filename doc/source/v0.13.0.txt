@@ -1,14 +1,14 @@
 .. _whatsnew_0130:
 
-v0.13.0 (August ??, 2013)
--------------------------
+v0.13.0 (October ??, 2013)
+--------------------------
 
 This is a major release from 0.12.0 and includes several new features and
 enhancements along with a large number of bug fixes.
 
 .. warning::
 
-   In 0.13.0 ``Series`` has internaly been refactored to no longer sub-class ``ndarray``
+   In 0.13.0 ``Series`` has internally been refactored to no longer sub-class ``ndarray``
    but instead subclass ``NDFrame``, similarly to the rest of the pandas containers. This should be
    a transparent change with only very limited API implications. See :ref:`Internal Refactoring<whatsnew_0130.refactoring>`
 
@@ -55,10 +55,14 @@ API changes
         index.set_names(["bob", "cranberry"], inplace=True)
 
   - Infer and downcast dtype if ``downcast='infer'`` is passed to ``fillna/ffill/bfill`` (:issue:`4604`)
+  - Remove deprecated ``Factor`` (:issue:`3650`)
+  - Remove deprecated ``set_printoptions/reset_printoptions`` (:issue:``3046``)
+  - Remove deprecated ``_verbose_info`` (:issue:`3215`)
   - ``__nonzero__`` for all NDFrame objects, will now raise a ``ValueError``, this reverts back to (:issue:`1073`, :issue:`4633`)
-    behavior. See :ref:`gotchas<gotchas.truth>` for a more detailed discussion.
+    behavior. Added the ``.bool()`` method to ``NDFrame`` objects to facilitate evaluating of single-element boolean Series
+    See :ref:`gotchas<gotchas.truth>` for a more detailed discussion.
 
-    This prevent behaviors like (which will now all raise ``ValueError``)
+    This prevents behaviors like (which will now all raise ``ValueError``)
 
     .. code-block:: python
 
@@ -67,6 +71,33 @@ API changes
 
         df1 and df2
         s1 and s2
+
+
+    To evaluate single-element pandas objects in a boolean context, use the method ``.bool()``:
+
+    .. ipython:: python
+
+       Series([True]).bool()
+       Series([False]).bool()
+       DataFrame([[True]]).bool()
+       DataFrame([[False]]).bool()
+
+  - All non-Index NDFrames (``Series``, ``DataFrame``, ``Panel``, ``Panel4D``,
+    ``SparsePanel``, etc.), now support the entire set of arithmetic operators
+    and arithmetic flex methods (add, sub, mul, etc.). ``SparsePanel`` does not
+    support ``pow`` or ``mod`` with non-scalars. (:issue:`3765`)
+
+
+Prior Version Deprecations/Changes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These were announced changes in 0.12 or prior that are taking effect as of 0.13.0
+
+  - Remove deprecated ``Factor`` (:issue:`3650`)
+  - Remove deprecated ``set_printoptions/reset_printoptions`` (:issue:``3046``)
+  - Remove deprecated ``_verbose_info`` (:issue:`3215`)
+  - Remove deprecated ``read_clipboard/to_clipboard/ExcelFile/ExcelWriter`` from ``pandas.io.parsers`` (:issue:`3717`)
+  - default for ``tupleize_cols`` is now ``False`` for both ``to_csv`` and ``read_csv``. Fair warning in 0.12 (:issue:`3604`)
 
 Indexing API Changes
 ~~~~~~~~~~~~~~~~~~~~
@@ -116,6 +147,72 @@ Indexing API Changes
        p
        p.loc[:,:,'C']
 
+Float64Index API Change
+~~~~~~~~~~~~~~~~~~~~~~~
+
+  - Added a new index type, ``Float64Index``. This will be automatically created when passing floating values in index creation.
+    This enables a pure label-based slicing paradigm that makes ``[],ix,loc`` for scalar indexing and slicing work exactly the
+    same. See :ref:`the docs<indexing.float64index>`, (:issue:`263`)
+
+    Construction is by default for floating type values.
+
+    .. ipython:: python
+
+       index = Index([1.5, 2, 3, 4.5, 5])
+       index
+       s = Series(range(5),index=index)
+       s
+
+    Scalar selection for ``[],.ix,.loc`` will always be label based. An integer will match an equal float index (e.g. ``3`` is equivalent to ``3.0``)
+
+    .. ipython:: python
+
+       s[3]
+       s.ix[3]
+       s.loc[3]
+
+    The only positional indexing is via ``iloc``
+
+    .. ipython:: python
+
+       s.iloc[3]
+
+    A scalar index that is not found will raise ``KeyError``
+
+    Slicing is ALWAYS on the values of the index, for ``[],ix,loc`` and ALWAYS positional with ``iloc``
+
+    .. ipython:: python
+
+       s[2:4]
+       s.ix[2:4]
+       s.loc[2:4]
+       s.iloc[2:4]
+
+    In float indexes, slicing using floats are allowed
+
+    .. ipython:: python
+
+       s[2.1:4.6]
+       s.loc[2.1:4.6]
+
+  - Indexing on other index types are preserved (and positional fallback for ``[],ix``), with the exception, that floating point slicing
+    on indexes on non ``Float64Index`` will now raise a ``TypeError``.
+
+    .. code-block:: python
+
+       In [1]: Series(range(5))[3.5]
+       TypeError: the label [3.5] is not a proper indexer for this index type (Int64Index)
+
+       In [1]: Series(range(5))[3.5:4.5]
+       TypeError: the slice start [3.5] is not a proper indexer for this index type (Int64Index)
+
+    Using a scalar float indexer will be deprecated in a future version, but is allowed for now.
+
+    .. code-block:: python
+
+       In [3]: Series(range(5))[3.0]
+       Out[3]: 3
+
 HDFStore API Changes
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -161,7 +258,7 @@ HDFStore API Changes
        df.to_hdf(path,'df_table2',append=True)
        df.to_hdf(path,'df_fixed')
        with get_store(path) as store:
-          print store
+          print(store)
 
     .. ipython:: python
        :suppress:
@@ -223,6 +320,8 @@ Enhancements
   - Clipboard functionality now works with PySide (:issue:`4282`)
   - Added a more informative error message when plot arguments contain
     overlapping color and style arguments (:issue:`4402`)
+  - ``to_dict`` now takes ``records`` as a possible outtype.  Returns an array
+    of column-keyed dictionaries. (:issue:`4936`)
 
   - NaN handing in get_dummies (:issue:`4446`) with `dummy_na`
 
@@ -292,10 +391,18 @@ Enhancements
          td.fillna(0)
          td.fillna(timedelta(days=1,seconds=5))
 
+    - You can do numeric reduction operations on timedeltas. Note that these will return
+      a single-element Series.
+
+      .. ipython:: python
+
+         td.mean()
+         td.quantile(.1)
+
   - ``plot(kind='kde')`` now accepts the optional parameters ``bw_method`` and
     ``ind``, passed to scipy.stats.gaussian_kde() (for scipy >= 0.11.0) to set
     the bandwidth, and to gkde.evaluate() to specify the indicies at which it
-    is evaluated, respecttively. See scipy docs.
+    is evaluated, respecttively. See scipy docs. (:issue:`4298`)
   - DataFrame constructor now accepts a numpy masked record array (:issue:`3478`)
   - The new vectorized string method ``extract`` return regular expression
     matches more conveniently.
@@ -312,24 +419,77 @@ Enhancements
 
        Series(['a1', 'b2', 'c3']).str.extract('([ab])(\d)')
 
-    Elements that do not match return a row of ``NaN``s. 
-    Thus, a Series of messy strings can be "converted" into a 
-    like-indexed Series or DataFrame of cleaned-up or more useful strings, 
+    Elements that do not match return a row of ``NaN``.
+    Thus, a Series of messy strings can be *converted* into a
+    like-indexed Series or DataFrame of cleaned-up or more useful strings,
     without necessitating ``get()`` to access tuples or ``re.match`` objects.
 
     Named groups like
 
     .. ipython:: python
 
-       Series(['a1', 'b2', 'c3']).str.match('(?P<letter>[ab])(?P<digit>\d)')
+       Series(['a1', 'b2', 'c3']).str.match(
+               '(?P<letter>[ab])(?P<digit>\d)')
 
-    and optional groups like
+    and optional groups can also be used.
 
     .. ipython:: python
-        Series(['a1', 'b2', '3']).str.match('(?P<letter>[ab])?(?P<digit>\d)')
 
-    can also be used.
+        Series(['a1', 'b2', '3']).str.match(
+                '(?P<letter>[ab])?(?P<digit>\d)')
 
+  - ``read_stata`` now accepts Stata 13 format (:issue:`4291`)
+  - ``read_fwf`` now infers the column specifications from the first 100 rows of
+    the file if the data has correctly separated and properly aligned columns
+    using the delimiter provided to the function (:issue:`4488`).
+
+  - support for nanosecond times in periods
+
+    .. warning::
+
+       These operations require ``numpy >= 1.7``
+
+    Period conversions in the range of seconds and below were reworked and extended
+    up to nanoseconds. Periods in the nanosecond range are now available.
+
+      .. ipython:: python
+
+        date_range('2013-01-01', periods=5, freq='5N')
+
+    or with frequency as offset
+
+      .. ipython:: python
+
+        date_range('2013-01-01', periods=5, freq=pd.offsets.Nano(5))
+
+    Timestamps can be modified in the nanosecond range
+
+      .. ipython:: python
+
+        t = Timestamp('20130101 09:01:02')
+        t + pd.datetools.Nano(123)
+
+  - The ``isin`` method plays nicely with boolean indexing. To get the rows where any of the conditions are met:
+
+      .. ipython:: python
+
+         dfi = DataFrame({'A': [1, 2, 3, 4], 'B': ['a', 'b', 'f', 'n']})
+         dfi
+         mask = dfi.isin({'A': [1, 2], 'B': ['e', 'f']})
+         mask
+         dfi[mask.any(1)]
+
+      :ref:`See the docs<indexing.basics.indexing_isin>` for more.
+  - All R datasets listed here http://stat.ethz.ch/R-manual/R-devel/library/datasets/html/00Index.html can now be loaded into Pandas objects
+
+    .. code-block:: python
+
+       import pandas.rpy.common as com
+       com.load_data('Titanic')
+
+  - ``tz_localize`` can infer a fall daylight savings transition based on the structure
+    of the unlocalized data (:issue:`4230`), see :ref:`here<timeseries.timezone>`
+  - DatetimeIndex is now in the API documentation, see :ref:`here<api.datetimeindex>`
 
 .. _whatsnew_0130.experimental:
 
@@ -419,6 +579,38 @@ Experimental
     selects all the rows of ``df`` where ``a < b < c`` evaluates to ``True``.
     For more details see the :ref:`indexing documentation on query
     <indexing.query>`.
+
+- ``pd.read_msgpack()`` and ``pd.to_msgpack()`` are now a supported method of serialization
+  of arbitrary pandas (and python objects) in a lightweight portable binary format. :ref:`See the docs<io.msgpack>`
+
+  .. warning::
+
+     Since this is an EXPERIMENTAL LIBRARY, the storage format may not be stable until a future release.
+
+  .. ipython:: python
+
+     df = DataFrame(np.random.rand(5,2),columns=list('AB'))
+     df.to_msgpack('foo.msg')
+     pd.read_msgpack('foo.msg')
+
+     s = Series(np.random.rand(5),index=date_range('20130101',periods=5))
+     pd.to_msgpack('foo.msg', df, s)
+     pd.read_msgpack('foo.msg')
+
+  You can pass ``iterator=True`` to iterator over the unpacked results
+
+  .. ipython:: python
+
+     for o in pd.read_msgpack('foo.msg',iterator=True):
+        print o
+
+  .. ipython:: python
+     :suppress:
+     :okexcept:
+
+     os.remove('foo.msg')
+
+- Added PySide support for the qtpandas DataFrameModel and DataFrameWidget.
 
 .. _whatsnew_0130.refactoring:
 

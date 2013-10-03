@@ -15,7 +15,8 @@ from pandas.tseries.index import DatetimeIndex
 from pandas.tools.merge import merge, concat, ordered_merge, MergeError
 from pandas.util.testing import (assert_frame_equal, assert_series_equal,
                                  assert_almost_equal, rands,
-                                 makeCustomDataframe as mkdf)
+                                 makeCustomDataframe as mkdf,
+                                 assertRaisesRegexp)
 from pandas import isnull, DataFrame, Index, MultiIndex, Panel, Series, date_range
 import pandas.algos as algos
 import pandas.util.testing as tm
@@ -229,6 +230,33 @@ class TestMerge(unittest.TestCase):
         source_copy = source.copy()
         source_copy['A'] = 0
         self.assertRaises(Exception, target.join, source_copy, on='A')
+
+    def test_join_on_fails_with_different_right_index(self):
+        with tm.assertRaises(ValueError):
+            df = DataFrame({'a': tm.choice(['m', 'f'], size=3),
+                            'b': np.random.randn(3)})
+            df2 = DataFrame({'a': tm.choice(['m', 'f'], size=10),
+                             'b': np.random.randn(10)},
+                            index=tm.makeCustomIndex(10, 2))
+            merge(df, df2, left_on='a', right_index=True)
+
+    def test_join_on_fails_with_different_left_index(self):
+        with tm.assertRaises(ValueError):
+            df = DataFrame({'a': tm.choice(['m', 'f'], size=3),
+                            'b': np.random.randn(3)},
+                           index=tm.makeCustomIndex(10, 2))
+            df2 = DataFrame({'a': tm.choice(['m', 'f'], size=10),
+                             'b': np.random.randn(10)})
+            merge(df, df2, right_on='b', left_index=True)
+
+    def test_join_on_fails_with_different_column_counts(self):
+        with tm.assertRaises(ValueError):
+            df = DataFrame({'a': tm.choice(['m', 'f'], size=3),
+                            'b': np.random.randn(3)})
+            df2 = DataFrame({'a': tm.choice(['m', 'f'], size=10),
+                             'b': np.random.randn(10)},
+                            index=tm.makeCustomIndex(10, 2))
+            merge(df, df2, right_on='a', left_on=['a', 'b'])
 
     def test_join_on_pass_vector(self):
         expected = self.target.join(self.source, on='C')
@@ -738,6 +766,30 @@ class TestMerge(unittest.TestCase):
         expected = DataFrame({'i1': {0: 0, 1: 1}, 'i1_': {0: 0.0, 1: nan},
                               'i2': {0: 0.5, 1: 1.5}, 'i3': {0: 0.69999999999999996,
                               1: nan}})[['i1', 'i2', 'i1_', 'i3']]
+        assert_frame_equal(result, expected)
+
+
+    def test_append_dtype_coerce(self):
+
+        # GH 4993
+        # appending with datetime will incorrectly convert datetime64
+        import datetime as dt
+        from pandas import NaT
+
+        df1 = DataFrame(index=[1,2], data=[dt.datetime(2013,1,1,0,0),
+                                           dt.datetime(2013,1,2,0,0)],
+                        columns=['start_time'])
+        df2 = DataFrame(index=[4,5], data=[[dt.datetime(2013,1,3,0,0),
+                                            dt.datetime(2013,1,3,6,10)],
+                                           [dt.datetime(2013,1,4,0,0),
+                                            dt.datetime(2013,1,4,7,10)]],
+                        columns=['start_time','end_time'])
+
+        expected = concat([
+            Series([NaT,NaT,dt.datetime(2013,1,3,6,10),dt.datetime(2013,1,4,7,10)],name='end_time'),
+            Series([dt.datetime(2013,1,1,0,0),dt.datetime(2013,1,2,0,0),dt.datetime(2013,1,3,0,0),dt.datetime(2013,1,4,0,0)],name='start_time'),
+            ],axis=1)
+        result = df1.append(df2,ignore_index=True)
         assert_frame_equal(result, expected)
 
 
@@ -1435,6 +1487,8 @@ class TestConcatenate(unittest.TestCase):
         assert_frame_equal(result, expected)
 
     def test_join_dups(self):
+
+        # joining dups
         df = concat([DataFrame(np.random.randn(10,4),columns=['A','A','B','B']),
                      DataFrame(np.random.randint(0,10,size=20).reshape(10,2),columns=['A','C'])],
                     axis=1)
@@ -1443,6 +1497,18 @@ class TestConcatenate(unittest.TestCase):
         result = df.join(df,rsuffix='_2')
         result.columns = expected.columns
         assert_frame_equal(result, expected)
+
+        # GH 4975, invalid join on dups
+        w = DataFrame(np.random.randn(4,2), columns=["x", "y"])
+        x = DataFrame(np.random.randn(4,2), columns=["x", "y"])
+        y = DataFrame(np.random.randn(4,2), columns=["x", "y"])
+        z = DataFrame(np.random.randn(4,2), columns=["x", "y"])
+
+        dta = x.merge(y, left_index=True, right_index=True).merge(z, left_index=True, right_index=True, how="outer")
+        dta = dta.merge(w, left_index=True, right_index=True)
+        expected = concat([x,y,z,w],axis=1)
+        expected.columns=['x_x','y_x','x_y','y_y','x_x','y_x','x_y','y_y']
+        assert_frame_equal(dta,expected)
 
     def test_handle_empty_objects(self):
         df = DataFrame(np.random.randn(10, 4), columns=list('abcd'))
@@ -1764,6 +1830,15 @@ class TestConcatenate(unittest.TestCase):
 
         # generator ok though
         concat(DataFrame(np.random.rand(5,5)) for _ in range(3))
+
+    def test_concat_mixed_types_fails(self):
+        df = DataFrame(randn(10, 1))
+
+        with tm.assertRaisesRegexp(TypeError, "Cannot concatenate.+"):
+            concat([df[0], df], axis=1)
+
+        with tm.assertRaisesRegexp(TypeError, "Cannot concatenate.+"):
+            concat([df, df[0]], axis=1)
 
 class TestOrderedMerge(unittest.TestCase):
 

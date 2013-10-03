@@ -5,10 +5,9 @@ import numpy as np
 
 from pandas.core.algorithms import factorize, match, unique, value_counts
 from pandas.core.common import isnull, notnull
-from pandas.core.categorical import Categorical, Factor
-from pandas.core.format import (set_printoptions, reset_printoptions,
-                                set_eng_float_format)
-from pandas.core.index import Index, Int64Index, MultiIndex
+from pandas.core.categorical import Categorical
+from pandas.core.format import set_eng_float_format
+from pandas.core.index import Index, Int64Index, Float64Index, MultiIndex
 
 from pandas.core.series import Series, TimeSeries
 from pandas.core.frame import DataFrame

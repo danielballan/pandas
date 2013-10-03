@@ -59,6 +59,15 @@ or return if ``any`` value is ``True``.
            print("I am any")
     >>> I am any
 
+To evaluate single-element pandas objects in a boolean context, use the method ``.bool()``:
+
+   .. ipython:: python
+
+       Series([True]).bool()
+       Series([False]).bool()
+       DataFrame([[True]]).bool()
+       DataFrame([[False]]).bool()
+
 See :ref:`boolean reductions<basics.reductions>` for more examples.
 
 Bitwise boolean
@@ -372,7 +381,7 @@ of the new set of columns rather than the original ones:
 
 .. ipython:: python
 
-   print open('tmp.csv').read()
+   print(open('tmp.csv').read())
 
    date_spec = {'nominal': [1, 2], 'actual': [1, 3]}
    df = read_csv('tmp.csv', header=None,

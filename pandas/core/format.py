@@ -49,7 +49,7 @@ docstring_to_string = """
         multiindex key at each row, default True
     justify : {'left', 'right'}, default None
         Left or right-justify the column labels. If None uses the option from
-        the print configuration (controlled by set_printoptions), 'right' out
+        the print configuration (controlled by set_option), 'right' out
         of the box.
     index_names : bool, optional
         Prints the names of the indexes, default True
@@ -60,6 +60,69 @@ docstring_to_string = """
     Returns
     -------
     formatted : string (or unicode, depending on data and options)"""
+
+class CategoricalFormatter(object):
+    def __init__(self, categorical, buf=None, length=True,
+                 na_rep='NaN', name=False, footer=True):
+        self.categorical = categorical
+        self.buf = buf if buf is not None else StringIO(u(""))
+        self.name = name
+        self.na_rep = na_rep
+        self.length = length
+        self.footer = footer
+
+    def _get_footer(self):
+        footer = ''
+
+        if self.name:
+            name = com.pprint_thing(self.categorical.name,
+                                    escape_chars=('\t', '\r', '\n'))
+            footer += ('Name: %s' %
+                        name) if self.categorical.name is not None else ""
+
+        if self.length:
+            if footer:
+                footer += ', '
+            footer += "Length: %d" % len(self.categorical)
+
+        levheader = 'Levels (%d): ' % len(self.categorical.levels)
+
+        #TODO: should max_line_width respect a setting?
+        levstring = np.array_repr(self.categorical.levels, max_line_width=60)
+        indent = ' ' * (levstring.find('[') + len(levheader) + 1)
+        lines = levstring.split('\n')
+        levstring = '\n'.join([lines[0]] +
+                              [indent + x.lstrip() for x in lines[1:]])
+        if footer:
+            footer += ', '
+        footer += levheader + levstring
+
+        return compat.text_type(footer)
+
+    def _get_formatted_values(self):
+        return format_array(np.asarray(self.categorical), None,
+                            float_format=None,
+                            na_rep=self.na_rep)
+
+    def to_string(self):
+        categorical = self.categorical
+
+        if len(categorical) == 0:
+            if self.footer:
+                return self._get_footer()
+            else:
+                return u('')
+
+        fmt_values = self._get_formatted_values()
+        pad_space = 10
+
+        result = ['%s' % i for i in fmt_values]
+        if self.footer:
+            footer = self._get_footer()
+            if footer:
+                result.append(footer)
+
+        return compat.text_type(u('\n').join(result))
 
 
 class SeriesFormatter(object):
@@ -1605,78 +1668,6 @@ def _has_names(index):
 
 #------------------------------------------------------------------------------
 # Global formatting options
-
-
-def set_printoptions(precision=None, column_space=None, max_rows=None,
-                     max_columns=None, colheader_justify=None,
-                     max_colwidth=None, notebook_repr_html=None,
-                     date_dayfirst=None, date_yearfirst=None,
-                     pprint_nest_depth=None, multi_sparse=None, encoding=None):
-    """
-    Alter default behavior of DataFrame.toString
-
-    precision : int
-        Floating point output precision (number of significant digits). This is
-        only a suggestion
-    column_space : int
-        Default space for DataFrame columns, defaults to 12
-    max_rows : int
-    max_columns : int
-        max_rows and max_columns are used in __repr__() methods to decide if
-        to_string() or info() is used to render an object to a string.
-        Either one, or both can be set to 0 (experimental). Pandas will figure
-        out how big the terminal is and will not display more rows or/and
-        columns that can fit on it.
-    colheader_justify
-    notebook_repr_html : boolean
-        When True (default), IPython notebook will use html representation for
-        pandas objects (if it is available).
-    date_dayfirst : boolean
-        When True, prints and parses dates with the day first, eg 20/01/2005
-    date_yearfirst : boolean
-        When True, prints and parses dates with the year first, eg 2005/01/20
-    pprint_nest_depth : int
-        Defaults to 3.
-        Controls the number of nested levels to process when pretty-printing
-        nested sequences.
-    multi_sparse : boolean
-        Default True, "sparsify" MultiIndex display (don't display repeated
-        elements in outer levels within groups)
-    """
-    import warnings
-    warnings.warn("set_printoptions is deprecated, use set_option instead",
-                  FutureWarning)
-    if precision is not None:
-        set_option("display.precision", precision)
-    if column_space is not None:
-        set_option("display.column_space", column_space)
-    if max_rows is not None:
-        set_option("display.max_rows", max_rows)
-    if max_colwidth is not None:
-        set_option("display.max_colwidth", max_colwidth)
-    if max_columns is not None:
-        set_option("display.max_columns", max_columns)
-    if colheader_justify is not None:
-        set_option("display.colheader_justify", colheader_justify)
-    if notebook_repr_html is not None:
-        set_option("display.notebook_repr_html", notebook_repr_html)
-    if date_dayfirst is not None:
-        set_option("display.date_dayfirst", date_dayfirst)
-    if date_yearfirst is not None:
-        set_option("display.date_yearfirst", date_yearfirst)
-    if pprint_nest_depth is not None:
-        set_option("display.pprint_nest_depth", pprint_nest_depth)
-    if multi_sparse is not None:
-        set_option("display.multi_sparse", multi_sparse)
-    if encoding is not None:
-        set_option("display.encoding", encoding)
-
-
-def reset_printoptions():
-    import warnings
-    warnings.warn("reset_printoptions is deprecated, use reset_option instead",
-                  FutureWarning)
-    reset_option("^display\.")
 
 _initial_defencoding = None
 def detect_console_encoding():

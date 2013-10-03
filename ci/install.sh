@@ -38,6 +38,9 @@ if [ -n "$LOCALE_OVERRIDE" ]; then
     sudo locale-gen "$LOCALE_OVERRIDE"
 fi
 
+
+# show-skipped is working at this particular commit
+time pip install git+git://github.com/cpcloud/nose-show-skipped.git@fa4ff84e53c09247753a155b428c1bf2c69cb6c3
 time pip install $PIP_ARGS -r ci/requirements-${TRAVIS_PYTHON_VERSION}${JOB_TAG}.txt
 time sudo apt-get install libatlas-base-dev gfortran
 
@@ -62,19 +65,6 @@ if [ x"$FULL_DEPS" == x"true" ]; then
     echo "Installing FULL_DEPS"
     # for pytables gets the lib as well
     time sudo apt-get $APT_ARGS install libhdf5-serial-dev
-
-    # fool statsmodels into thinking pandas was already installed
-    # so it won't refuse to install itself.
-
-    SITE_PKG_DIR=$VIRTUAL_ENV/lib/python$TRAVIS_PYTHON_VERSION/site-packages
-    echo "Using SITE_PKG_DIR: $SITE_PKG_DIR"
-
-    mkdir  $SITE_PKG_DIR/pandas
-    touch $SITE_PKG_DIR/pandas/__init__.py
-    echo "version='0.10.0-phony'" >  $SITE_PKG_DIR/pandas/version.py
-    time pip install $PIP_ARGS git+git://github.com/statsmodels/statsmodels@c9062e43b8a5f7385537ca95#egg=statsmodels
-
-    rm -Rf $SITE_PKG_DIR/pandas # scrub phoney pandas
 fi
 
 # build pandas

@@ -76,6 +76,7 @@ Recommended Dependencies
 
   * `numexpr <http://code.google.com/p/numexpr/>`__: for accelerating certain numerical operations.
     ``numexpr`` uses multiple cores as well as smart chunking and caching to achieve large speedups.
+
   * `bottleneck <http://berkeleyanalytics.com/bottleneck>`__: for accelerating certain types of ``nan``
     evaluations. ``bottleneck`` uses specialized cython routines to achieve large speedups.
 
@@ -100,6 +101,8 @@ Optional Dependencies
   * `openpyxl <http://packages.python.org/openpyxl/>`__, `xlrd/xlwt <http://www.python-excel.org/>`__
      * openpyxl version 1.6.1 or higher
      * Needed for Excel I/O
+  * `XlsxWriter <https://pypi.python.org/pypi/XlsxWriter>`__
+     * Alternative Excel writer.
   * `boto <https://pypi.python.org/pypi/boto>`__: necessary for Amazon S3
     access.
   * One of `PyQt4
@@ -108,7 +111,7 @@ Optional Dependencies
     <http://www.pygtk.org/>`__, `xsel
     <http://www.vergenet.net/~conrad/software/xsel/>`__, or `xclip
     <http://sourceforge.net/projects/xclip/>`__: necessary to use
-    :func:`~pandas.io.parsers.read_clipboard`. Most package managers on Linux
+    :func:`~pandas.io.clipboard.read_clipboard`. Most package managers on Linux
     distributions will have xclip and/or xsel immediately available for
     installation.
   * One of the following combinations of libraries is needed to use the
@@ -116,8 +119,8 @@ Optional Dependencies
 
     * `BeautifulSoup4`_ and `html5lib`_ (Any recent version of `html5lib`_ is
       okay.)
-    * `BeautifulSoup4`_ and `lxml`_ 
-    * `BeautifulSoup4`_ and `html5lib`_ and `lxml`_ 
+    * `BeautifulSoup4`_ and `lxml`_
+    * `BeautifulSoup4`_ and `html5lib`_ and `lxml`_
     * Only `lxml`_, although see :ref:`HTML reading gotchas <html-gotchas>`
       for reasons as to why you should probably **not** take this approach.
 

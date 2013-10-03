@@ -1328,7 +1328,7 @@ class TestHDFStore(unittest.TestCase):
             recons = store.select('df')
             assert isinstance(recons, DataFrame)
 
-        print ("\nbig_table frame [%s] -> %5.2f" % (rows, time.time() - x))
+        print("\nbig_table frame [%s] -> %5.2f" % (rows, time.time() - x))
 
     def test_big_table2_frame(self):
         # this is a really big table: 1m rows x 60 float columns, 20 string, 20 datetime
@@ -1336,7 +1336,7 @@ class TestHDFStore(unittest.TestCase):
         raise nose.SkipTest('no big table2 frame')
 
         # create and write a big table
-        print ("\nbig_table2 start")
+        print("\nbig_table2 start")
         import time
         start_time = time.time()
         df = DataFrame(np.random.randn(1000 * 1000, 60), index=range(int(
@@ -1346,8 +1346,8 @@ class TestHDFStore(unittest.TestCase):
         for x in range(20):
             df['datetime%03d' % x] = datetime.datetime(2001, 1, 2, 0, 0)
 
-        print ("\nbig_table2 frame (creation of df) [rows->%s] -> %5.2f"
-                    % (len(df.index), time.time() - start_time))
+        print("\nbig_table2 frame (creation of df) [rows->%s] -> %5.2f"
+              % (len(df.index), time.time() - start_time))
 
         def f(chunksize):
             with ensure_clean(self.path,mode='w') as store:
@@ -1357,15 +1357,15 @@ class TestHDFStore(unittest.TestCase):
 
         for c in [10000, 50000, 250000]:
             start_time = time.time()
-            print ("big_table2 frame [chunk->%s]" % c)
+            print("big_table2 frame [chunk->%s]" % c)
             rows = f(c)
-            print ("big_table2 frame [rows->%s,chunk->%s] -> %5.2f"
-                    % (rows, c, time.time() - start_time))
+            print("big_table2 frame [rows->%s,chunk->%s] -> %5.2f"
+                  % (rows, c, time.time() - start_time))
 
     def test_big_put_frame(self):
         raise nose.SkipTest('no big put frame')
 
-        print ("\nbig_put start")
+        print("\nbig_put start")
         import time
         start_time = time.time()
         df = DataFrame(np.random.randn(1000 * 1000, 60), index=range(int(
@@ -1375,17 +1375,17 @@ class TestHDFStore(unittest.TestCase):
         for x in range(20):
             df['datetime%03d' % x] = datetime.datetime(2001, 1, 2, 0, 0)
 
-        print ("\nbig_put frame (creation of df) [rows->%s] -> %5.2f"
-                % (len(df.index), time.time() - start_time))
+        print("\nbig_put frame (creation of df) [rows->%s] -> %5.2f"
+              % (len(df.index), time.time() - start_time))
 
         with ensure_clean(self.path, mode='w') as store:
             start_time = time.time()
             store = HDFStore(self.path, mode='w')
             store.put('df', df)
 
-            print (df.get_dtype_counts())
-            print ("big_put frame [shape->%s] -> %5.2f"
-                    % (df.shape, time.time() - start_time))
+            print(df.get_dtype_counts())
+            print("big_put frame [shape->%s] -> %5.2f"
+                  % (df.shape, time.time() - start_time))
 
     def test_big_table_panel(self):
         raise nose.SkipTest('no big table panel')
@@ -1410,7 +1410,7 @@ class TestHDFStore(unittest.TestCase):
             recons = store.select('wp')
             assert isinstance(recons, Panel)
 
-        print ("\nbig_table panel [%s] -> %5.2f" % (rows, time.time() - x))
+        print("\nbig_table panel [%s] -> %5.2f" % (rows, time.time() - x))
 
     def test_append_diff_item_order(self):
 
@@ -2295,7 +2295,7 @@ class TestHDFStore(unittest.TestCase):
     def test_timeseries_preepoch(self):
 
         if sys.version_info[0] == 2 and sys.version_info[1] < 7:
-            raise nose.SkipTest
+            raise nose.SkipTest("won't work on Python < 2.7")
 
         dr = bdate_range('1/1/1940', '1/1/1960')
         ts = Series(np.random.randn(len(dr)), index=dr)
@@ -2662,18 +2662,18 @@ class TestHDFStore(unittest.TestCase):
             df = DataFrame(np.random.randn(5,2), columns =['A','B'])
             df['object'] = 'foo'
             df.ix[4:5,'object'] = 'bar'
-            df['bool'] = df['A'] > 0
+            df['boolv'] = df['A'] > 0
             _maybe_remove(store, 'df')
             store.append('df', df, data_columns = True)
 
-            expected = df[df.bool == True].reindex(columns=['A','bool'])
+            expected = df[df.boolv == True].reindex(columns=['A','boolv'])
             for v in [True,'true',1]:
-                result = store.select('df', Term('bool == %s' % str(v)), columns = ['A','bool'])
+                result = store.select('df', Term('boolv == %s' % str(v)), columns = ['A','boolv'])
                 tm.assert_frame_equal(expected, result)
 
-            expected = df[df.bool == False ].reindex(columns=['A','bool'])
+            expected = df[df.boolv == False ].reindex(columns=['A','boolv'])
             for v in [False,'false',0]:
-                result = store.select('df', Term('bool == %s' % str(v)), columns = ['A','bool'])
+                result = store.select('df', Term('boolv == %s' % str(v)), columns = ['A','boolv'])
                 tm.assert_frame_equal(expected, result)
 
             # integer index
@@ -3599,7 +3599,7 @@ class TestHDFStore(unittest.TestCase):
             safe_remove(self.path)
 
     def test_legacy_table_write(self):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping for now")
 
         store = HDFStore(tm.get_data_path('legacy_hdf/legacy_table_%s.h5' % pandas.__version__), 'a')
 
@@ -3695,6 +3695,21 @@ class TestHDFStore(unittest.TestCase):
     #                          np.tile(np.arange(2), 5)])
 
     #    self.assertRaises(Exception, store.put, 'foo', df, format='table')
+
+    def test_append_with_diff_col_name_types_raises_value_error(self):
+        df = DataFrame(np.random.randn(10, 1))
+        df2 = DataFrame({'a': np.random.randn(10)})
+        df3 = DataFrame({(1, 2): np.random.randn(10)})
+        df4 = DataFrame({('1', 2): np.random.randn(10)})
+        df5 = DataFrame({('1', 2, object): np.random.randn(10)})
+
+        with ensure_clean('__%s__.h5' % tm.rands(20)) as store:
+            name = 'df_%s' % tm.rands(10)
+            store.append(name, df)
+
+            for d in (df2, df3, df4, df5):
+                with tm.assertRaises(ValueError):
+                    store.append(name, d)
 
 
 def _test_sort(obj):

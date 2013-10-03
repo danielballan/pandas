@@ -26,7 +26,7 @@ from pandas.core.common import (isnull, notnull, PandasError, _try_sort,
                                 _default_index, _maybe_upcast, _is_sequence,
                                 _infer_dtype_from_scalar, _values_from_object,
                                 _coerce_to_dtypes, _DATELIKE_DTYPES, is_list_like)
-from pandas.core.generic import NDFrame
+from pandas.core.generic import NDFrame, _shared_docs
 from pandas.core.index import Index, MultiIndex, _ensure_index
 from pandas.core.indexing import (_maybe_droplevels,
                                   _convert_to_index_sliceable,
@@ -34,7 +34,7 @@ from pandas.core.indexing import (_maybe_droplevels,
 from pandas.core.internals import (BlockManager,
                                    create_block_manager_from_arrays,
                                    create_block_manager_from_blocks)
-from pandas.core.series import Series, _radd_compat
+from pandas.core.series import Series
 import pandas.computation.expressions as expressions
 from pandas.computation.eval import eval as _eval
 from pandas.computation.expr import _ensure_scope
@@ -42,7 +42,6 @@ from pandas.compat.scipy import scoreatpercentile as _quantile
 from pandas.compat import(range, zip, lrange, lmap, lzip, StringIO, u,
                           OrderedDict, raise_with_traceback)
 from pandas import compat
-from pandas.util.terminal import get_terminal_size
 from pandas.util.decorators import deprecate, Appender, Substitution
 
 from pandas.tseries.period import PeriodIndex
@@ -53,6 +52,7 @@ import pandas.core.datetools as datetools
 import pandas.core.common as com
 import pandas.core.format as fmt
 import pandas.core.nanops as nanops
+import pandas.core.ops as ops
 
 import pandas.lib as lib
 import pandas.algos as _algos
@@ -62,53 +62,9 @@ from pandas.core.config import get_option
 #----------------------------------------------------------------------
 # Docstring templates
 
-_arith_doc = """
-Binary operator %s with support to substitute a fill_value for missing data in
-one of the inputs
-
-Parameters
-----------
-other : Series, DataFrame, or constant
-axis : {0, 1, 'index', 'columns'}
-    For Series input, axis to match Series index on
-fill_value : None or float value, default None
-    Fill missing (NaN) values with this value. If both DataFrame locations are
-    missing, the result will be missing
-level : int or name
-    Broadcast across a level, matching Index values on the
-    passed MultiIndex level
-
-Notes
------
-Mismatched indices will be unioned together
-
-Returns
--------
-result : DataFrame
-"""
-
-
-_stat_doc = """
-Return %(name)s over requested axis.
-%(na_action)s
-
-Parameters
-----------
-axis : {0, 1}
-    0 for row-wise, 1 for column-wise
-skipna : boolean, default True
-    Exclude NA/null values. If an entire row/column is NA, the result
-    will be NA
-level : int, default None
-    If the axis is a MultiIndex (hierarchical), count along a
-    particular level, collapsing into a DataFrame
-%(extras)s
-Returns
--------
-%(shortname)s : Series (or DataFrame if level specified)
-"""
-
-_doc_exclude_na = "NA/null values are excluded"
+_shared_doc_kwargs = dict(axes='index, columns',
+                           klass='DataFrame',
+                           axes_single_arg="{0,1,'index','columns'}")
 
 _numeric_only_doc = """numeric_only : boolean, default None
     Include only float, int, boolean data. If None, will attempt to use
@@ -182,153 +138,6 @@ merged : DataFrame
 """
 
 #----------------------------------------------------------------------
-# Factory helper methods
-
-
-def _arith_method(op, name, str_rep=None, default_axis='columns', fill_zeros=None, **eval_kwargs):
-    def na_op(x, y):
-        try:
-            result = expressions.evaluate(
-                op, str_rep, x, y, raise_on_error=True, **eval_kwargs)
-            result = com._fill_zeros(result, y, fill_zeros)
-
-        except TypeError:
-            xrav = x.ravel()
-            result = np.empty(x.size, dtype=x.dtype)
-            if isinstance(y, (np.ndarray, Series)):
-                yrav = y.ravel()
-                mask = notnull(xrav) & notnull(yrav)
-                result[mask] = op(xrav[mask], yrav[mask])
-            else:
-                mask = notnull(xrav)
-                result[mask] = op(xrav[mask], y)
-
-            result, changed = com._maybe_upcast_putmask(result, -mask, np.nan)
-            result = result.reshape(x.shape)
-
-        return result
-
-    @Appender(_arith_doc % name)
-    def f(self, other, axis=default_axis, level=None, fill_value=None):
-        if isinstance(other, DataFrame):    # Another DataFrame
-            return self._combine_frame(other, na_op, fill_value, level)
-        elif isinstance(other, Series):
-            return self._combine_series(other, na_op, fill_value, axis, level)
-        elif isinstance(other, (list, tuple)):
-            if axis is not None and self._get_axis_name(axis) == 'index':
-                casted = Series(other, index=self.index)
-            else:
-                casted = Series(other, index=self.columns)
-            return self._combine_series(casted, na_op, fill_value, axis, level)
-        elif isinstance(other, np.ndarray):
-            if other.ndim == 1:
-                if axis is not None and self._get_axis_name(axis) == 'index':
-                    casted = Series(other, index=self.index)
-                else:
-                    casted = Series(other, index=self.columns)
-                return self._combine_series(casted, na_op, fill_value,
-                                            axis, level)
-            elif other.ndim == 2:
-                casted = DataFrame(other, index=self.index,
-                                   columns=self.columns)
-                return self._combine_frame(casted, na_op, fill_value, level)
-            else:
-                raise ValueError("Incompatible argument shape %s" % (other.shape,))
-        else:
-            return self._combine_const(other, na_op)
-
-    f.__name__ = name
-
-    return f
-
-
-def _flex_comp_method(op, name, str_rep=None, default_axis='columns'):
-
-    def na_op(x, y):
-        try:
-            result = op(x, y)
-        except TypeError:
-            xrav = x.ravel()
-            result = np.empty(x.size, dtype=x.dtype)
-            if isinstance(y, (np.ndarray, Series)):
-                yrav = y.ravel()
-                mask = notnull(xrav) & notnull(yrav)
-                result[mask] = op(np.array(list(xrav[mask])),
-                                  np.array(list(yrav[mask])))
-            else:
-                mask = notnull(xrav)
-                result[mask] = op(np.array(list(xrav[mask])), y)
-
-            if op == operator.ne:  # pragma: no cover
-                np.putmask(result, -mask, True)
-            else:
-                np.putmask(result, -mask, False)
-            result = result.reshape(x.shape)
-
-        return result
-
-    @Appender('Wrapper for flexible comparison methods %s' % name)
-    def f(self, other, axis=default_axis, level=None):
-        if isinstance(other, DataFrame):    # Another DataFrame
-            return self._flex_compare_frame(other, na_op, str_rep, level)
-
-        elif isinstance(other, Series):
-            return self._combine_series(other, na_op, None, axis, level)
-
-        elif isinstance(other, (list, tuple)):
-            if axis is not None and self._get_axis_name(axis) == 'index':
-                casted = Series(other, index=self.index)
-            else:
-                casted = Series(other, index=self.columns)
-
-            return self._combine_series(casted, na_op, None, axis, level)
-
-        elif isinstance(other, np.ndarray):
-            if other.ndim == 1:
-                if axis is not None and self._get_axis_name(axis) == 'index':
-                    casted = Series(other, index=self.index)
-                else:
-                    casted = Series(other, index=self.columns)
-
-                return self._combine_series(casted, na_op, None, axis, level)
-
-            elif other.ndim == 2:
-                casted = DataFrame(other, index=self.index,
-                                   columns=self.columns)
-
-                return self._flex_compare_frame(casted, na_op, str_rep, level)
-
-            else:
-                raise ValueError("Incompatible argument shape: %s" %
-                                 (other.shape,))
-
-        else:
-            return self._combine_const(other, na_op)
-
-    f.__name__ = name
-
-    return f
-
-
-def _comp_method(func, name, str_rep):
-    @Appender('Wrapper for comparison method %s' % name)
-    def f(self, other):
-        if isinstance(other, DataFrame):    # Another DataFrame
-            return self._compare_frame(other, func, str_rep)
-        elif isinstance(other, Series):
-            return self._combine_series_infer(other, func)
-        else:
-
-            # straight boolean comparisions we want to allow all columns
-            # (regardless of dtype to pass thru)
-            return self._combine_const(other, func, raise_on_error=False).fillna(True).astype(bool)
-
-    f.__name__ = name
-
-    return f
-
-
-#----------------------------------------------------------------------
 # DataFrame class
 
 
@@ -371,7 +180,6 @@ class DataFrame(NDFrame):
     read_csv / read_table / read_clipboard
     """
     _auto_consolidate = True
-    _verbose_info = True
 
     @property
     def _constructor(self):
@@ -555,12 +363,6 @@ class DataFrame(NDFrame):
         return create_block_manager_from_blocks([values.T], [columns, index])
 
     @property
-    def _verbose_info(self):
-        warnings.warn('The _verbose_info property will be removed in version '
-                      '0.13. please use "max_info_rows"', FutureWarning)
-        return get_option('display.max_info_rows') is None
-
-    @property
     def axes(self):
         return [self.index, self.columns]
 
@@ -724,9 +526,9 @@ class DataFrame(NDFrame):
 
             >>> df = DataFrame([[1, 1.0]], columns=['x', 'y'])
             >>> row = next(df.iterrows())[1]
-            >>> print row['x'].dtype
+            >>> print(row['x'].dtype)
             float64
-            >>> print df['x'].dtype
+            >>> print(df['x'].dtype)
             int64
 
         Returns
@@ -758,79 +560,6 @@ class DataFrame(NDFrame):
     def __len__(self):
         """Returns length of info axis, but here we use the index """
         return len(self.index)
-
-    #----------------------------------------------------------------------
-    # Arithmetic methods
-
-    add = _arith_method(operator.add, 'add', '+')
-    mul = _arith_method(operator.mul, 'multiply', '*')
-    sub = _arith_method(operator.sub, 'subtract', '-')
-    div = divide = _arith_method(lambda x, y: x / y, 'divide', '/')
-    pow = _arith_method(operator.pow, 'pow', '**')
-    mod = _arith_method(lambda x, y: x % y, 'mod')
-
-    radd = _arith_method(_radd_compat, 'radd')
-    rmul = _arith_method(operator.mul, 'rmultiply')
-    rsub = _arith_method(lambda x, y: y - x, 'rsubtract')
-    rdiv = _arith_method(lambda x, y: y / x, 'rdivide')
-    rpow = _arith_method(lambda x, y: y ** x, 'rpow')
-    rmod = _arith_method(lambda x, y: y % x, 'rmod')
-
-    __add__ = _arith_method(operator.add, '__add__', '+', default_axis=None)
-    __sub__ = _arith_method(operator.sub, '__sub__', '-', default_axis=None)
-    __mul__ = _arith_method(operator.mul, '__mul__', '*', default_axis=None)
-    __truediv__ = _arith_method(operator.truediv, '__truediv__', '/',
-                                default_axis=None, fill_zeros=np.inf, truediv=True)
-    # numexpr produces a different value (python/numpy: 0.000, numexpr: inf)
-    # when dividing by zero, so can't use floordiv speed up (yet)
-    # __floordiv__ = _arith_method(operator.floordiv, '__floordiv__', '//',
-    __floordiv__ = _arith_method(operator.floordiv, '__floordiv__',
-                                 default_axis=None, fill_zeros=np.inf)
-    __pow__ = _arith_method(operator.pow, '__pow__', '**', default_axis=None)
-
-    # currently causes a floating point exception to occur - so sticking with unaccelerated for now
-    # __mod__ = _arith_method(operator.mod, '__mod__', '%', default_axis=None, fill_zeros=np.nan)
-    __mod__ = _arith_method(
-        operator.mod, '__mod__', default_axis=None, fill_zeros=np.nan)
-
-    __radd__ = _arith_method(_radd_compat, '__radd__', default_axis=None)
-    __rmul__ = _arith_method(operator.mul, '__rmul__', default_axis=None)
-    __rsub__ = _arith_method(lambda x, y: y - x, '__rsub__', default_axis=None)
-    __rtruediv__ = _arith_method(lambda x, y: y / x, '__rtruediv__',
-                                 default_axis=None, fill_zeros=np.inf)
-    __rfloordiv__ = _arith_method(lambda x, y: y // x, '__rfloordiv__',
-                                  default_axis=None, fill_zeros=np.inf)
-    __rpow__ = _arith_method(lambda x, y: y ** x, '__rpow__',
-                             default_axis=None)
-    __rmod__ = _arith_method(lambda x, y: y % x, '__rmod__', default_axis=None,
-                             fill_zeros=np.nan)
-
-    # boolean operators
-    __and__ = _arith_method(operator.and_, '__and__', '&')
-    __or__ = _arith_method(operator.or_, '__or__', '|')
-    __xor__ = _arith_method(operator.xor, '__xor__')
-
-    # Python 2 division methods
-    if not compat.PY3:
-        __div__ = _arith_method(operator.div, '__div__', '/',
-                                default_axis=None, fill_zeros=np.inf, truediv=False)
-        __rdiv__ = _arith_method(lambda x, y: y / x, '__rdiv__',
-                                 default_axis=None, fill_zeros=np.inf)
-
-    # Comparison methods
-    __eq__ = _comp_method(operator.eq, '__eq__', '==')
-    __ne__ = _comp_method(operator.ne, '__ne__', '!=')
-    __lt__ = _comp_method(operator.lt, '__lt__', '<')
-    __gt__ = _comp_method(operator.gt, '__gt__', '>')
-    __le__ = _comp_method(operator.le, '__le__', '<=')
-    __ge__ = _comp_method(operator.ge, '__ge__', '>=')
-
-    eq = _flex_comp_method(operator.eq, 'eq', '==')
-    ne = _flex_comp_method(operator.ne, 'ne', '!=')
-    lt = _flex_comp_method(operator.lt, 'lt', '<')
-    gt = _flex_comp_method(operator.gt, 'gt', '>')
-    le = _flex_comp_method(operator.le, 'le', '<=')
-    ge = _flex_comp_method(operator.ge, 'ge', '>=')
 
     def dot(self, other):
         """
@@ -918,11 +647,11 @@ class DataFrame(NDFrame):
 
         Parameters
         ----------
-        outtype : str {'dict', 'list', 'series'}
+        outtype : str {'dict', 'list', 'series', 'records'}
             Determines the type of the values of the dictionary. The
             default `dict` is a nested dictionary {column -> {index -> value}}.
             `list` returns {column -> list(values)}. `series` returns
-            {column -> Series(values)}.
+            {column -> Series(values)}. `records` returns [{columns -> value}].
             Abbreviations are allowed.
 
 
@@ -939,6 +668,9 @@ class DataFrame(NDFrame):
             return dict((k, v.tolist()) for k, v in compat.iteritems(self))
         elif outtype.lower().startswith('s'):
             return dict((k, v) for k, v in compat.iteritems(self))
+        elif outtype.lower().startswith('r'):
+            return [dict((k, v) for k, v in zip(self.columns, row))
+                    for row in self.values]
         else:  # pragma: no cover
             raise ValueError("outtype %s not understood" % outtype)
 
@@ -1356,7 +1088,7 @@ class DataFrame(NDFrame):
                                      tupleize_cols=tupleize_cols)
         formatter.save()
 
-    def to_excel(self, excel_writer, sheet_name='sheet1', na_rep='',
+    def to_excel(self, excel_writer, sheet_name='Sheet1', na_rep='',
                  float_format=None, cols=None, header=True, index=True,
                  index_label=None, startrow=0, startcol=0, engine=None):
         """
@@ -1366,7 +1098,7 @@ class DataFrame(NDFrame):
         ----------
         excel_writer : string or ExcelWriter object
             File path or existing ExcelWriter
-        sheet_name : string, default 'sheet1'
+        sheet_name : string, default 'Sheet1'
             Name of sheet which will contain DataFrame
         na_rep : string, default ''
             Missing data representation
@@ -1397,8 +1129,8 @@ class DataFrame(NDFrame):
         to the existing workbook.  This can be used to save different
         DataFrames to one workbook
         >>> writer = ExcelWriter('output.xlsx')
-        >>> df1.to_excel(writer,'sheet1')
-        >>> df2.to_excel(writer,'sheet2')
+        >>> df1.to_excel(writer,'Sheet1')
+        >>> df2.to_excel(writer,'Sheet2')
         >>> writer.save()
         """
         from pandas.io.excel import ExcelWriter
@@ -1654,6 +1386,7 @@ class DataFrame(NDFrame):
         return self.apply(lambda x: x.ftype, reduce=False)
 
     def transpose(self):
+        """Transpose index and columns"""
         return super(DataFrame, self).transpose(1, 0)
 
     T = property(transpose)
@@ -1901,29 +1634,6 @@ class DataFrame(NDFrame):
             raise ValueError('Must pass DataFrame with boolean values only')
         return self.where(key)
 
-    def _get_index_resolvers(self, axis):
-        # index or columns
-        axis_index = getattr(self, axis)
-        d = dict()
-
-        for i, name in enumerate(axis_index.names):
-            if name is not None:
-                key = level = name
-            else:
-                # prefix with 'i' or 'c' depending on the input axis
-                # e.g., you must do ilevel_0 for the 0th level of an unnamed
-                # multiiindex
-                level_string = '{prefix}level_{i}'.format(prefix=axis[0], i=i)
-                key = level_string
-                level = i
-
-            d[key] = Series(axis_index.get_level_values(level).values,
-                            index=axis_index, name=level)
-
-        # put the index/columns itself in the dict
-        d[axis] = axis_index
-        return d
-
     def query(self, expr, **kwargs):
         """Query the columns of a frame with a boolean expression.
 
@@ -2044,13 +1754,12 @@ class DataFrame(NDFrame):
         """
         resolvers = kwargs.pop('resolvers', None)
         if resolvers is None:
-            index_resolvers = self._get_index_resolvers('index')
-            index_resolvers.update(self._get_index_resolvers('columns'))
+            index_resolvers = self._get_resolvers()
             resolvers = [self, index_resolvers]
         kwargs['local_dict'] = _ensure_scope(resolvers=resolvers, **kwargs)
         return _eval(expr, **kwargs)
 
-    def _slice(self, slobj, axis=0, raise_on_error=False):
+    def _slice(self, slobj, axis=0, raise_on_error=False, typ=None):
         axis = self._get_block_manager_axis(axis)
         new_data = self._data.get_slice(
             slobj, axis=axis, raise_on_error=raise_on_error)
@@ -2454,6 +2163,24 @@ class DataFrame(NDFrame):
         else:
             return self._reindex_with_indexers({0: [new_index,   row_indexer],
                                                 1: [new_columns, col_indexer]}, copy=copy, fill_value=fill_value)
+
+    @Appender(_shared_docs['reindex'] % _shared_doc_kwargs)
+    def reindex(self, index=None, columns=None, **kwargs):
+        return super(DataFrame, self).reindex(index=index, columns=columns,
+                                              **kwargs)
+
+    @Appender(_shared_docs['reindex_axis'] % _shared_doc_kwargs)
+    def reindex_axis(self, labels, axis=0, method=None, level=None, copy=True,
+                     limit=None, fill_value=np.nan):
+        return super(DataFrame, self).reindex_axis(labels=labels, axis=axis,
+                                                   method=method, level=level,
+                                                   copy=copy, limit=limit,
+                                                   fill_value=fill_value)
+
+    @Appender(_shared_docs['rename'] % _shared_doc_kwargs)
+    def rename(self, index=None, columns=None, **kwargs):
+        return super(DataFrame, self).rename(index=index, columns=columns,
+                                             **kwargs)
 
     def reindex_like(self, other, method=None, copy=True, limit=None,
                      fill_value=NA):
@@ -3447,28 +3174,38 @@ class DataFrame(NDFrame):
 
         Parameters
         ----------
-        level : int, string, or list of these, default last level
+        level : int, string, or list of these, default -1 (last level)
             Level(s) of index to unstack, can pass level name
+
+        See also
+        --------
+        DataFrame.pivot : Pivot a table based on column values.
+        DataFrame.stack : Pivot a level of the column labels (inverse operation
+            from `unstack`).
 
         Examples
         --------
+        >>> index = pd.MultiIndex.from_tuples([('one', 'a'), ('one', 'b'),
+        ...                                    ('two', 'a'), ('two', 'b')])
+        >>> s = pd.Series(np.arange(1.0, 5.0), index=index)
         >>> s
-        one  a   1.
-        one  b   2.
-        two  a   3.
-        two  b   4.
+        one  a   1
+             b   2
+        two  a   3
+             b   4
+        dtype: float64
 
         >>> s.unstack(level=-1)
              a   b
-        one  1.  2.
-        two  3.  4.
+        one  1  2
+        two  3  4
+
+        >>> s.unstack(level=0)
+           one  two
+        a  1   3
+        b  2   4
 
         >>> df = s.unstack(level=0)
-        >>> df
-           one  two
-        a  1.   2.
-        b  3.   4.
-
         >>> df.unstack()
         one  a  1.
              b  3.
@@ -3630,6 +3367,7 @@ class DataFrame(NDFrame):
         else: # pragma : no cover
             raise AssertionError('Axis must be 0 or 1, got %s' % str(axis))
 
+        i = None
         keys = []
         results = {}
         if ignore_failures:
@@ -3650,14 +3388,12 @@ class DataFrame(NDFrame):
                     results[i] = func(v)
                     keys.append(v.name)
             except Exception as e:
-                try:
-                    if hasattr(e, 'args'):
+                if hasattr(e, 'args'):
+                    # make sure i is defined
+                    if i is not None:
                         k = res_index[i]
                         e.args = e.args + ('occurred at index %s' %
-                                           com.pprint_thing(k),)
-                except (NameError, UnboundLocalError):  # pragma: no cover
-                    # no k defined yet
-                    pass
+                                        com.pprint_thing(k),)
                 raise
 
         if len(results) > 0 and _is_sequence(results[0]):
@@ -4135,7 +3871,7 @@ class DataFrame(NDFrame):
         else:
             return result
 
-    def any(self, axis=0, bool_only=None, skipna=True, level=None):
+    def any(self, axis=None, bool_only=None, skipna=True, level=None, **kwargs):
         """
         Return whether any element is True over requested axis.
         %(na_action)s
@@ -4157,13 +3893,15 @@ class DataFrame(NDFrame):
         -------
         any : Series (or DataFrame if level specified)
         """
+        if axis is None:
+            axis = self._stat_axis_number
         if level is not None:
             return self._agg_by_level('any', axis=axis, level=level,
                                       skipna=skipna)
         return self._reduce(nanops.nanany, axis=axis, skipna=skipna,
                             numeric_only=bool_only, filter_type='bool')
 
-    def all(self, axis=0, bool_only=None, skipna=True, level=None):
+    def all(self, axis=None, bool_only=None, skipna=True, level=None, **kwargs):
         """
         Return whether all elements are True over requested axis.
         %(na_action)s
@@ -4185,168 +3923,13 @@ class DataFrame(NDFrame):
         -------
         any : Series (or DataFrame if level specified)
         """
+        if axis is None:
+            axis = self._stat_axis_number
         if level is not None:
             return self._agg_by_level('all', axis=axis, level=level,
                                       skipna=skipna)
         return self._reduce(nanops.nanall, axis=axis, skipna=skipna,
                             numeric_only=bool_only, filter_type='bool')
-
-    @Substitution(name='sum', shortname='sum', na_action=_doc_exclude_na,
-                  extras=_numeric_only_doc)
-    @Appender(_stat_doc)
-    def sum(self, axis=0, numeric_only=None, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('sum', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nansum, axis=axis, skipna=skipna,
-                            numeric_only=numeric_only)
-
-    @Substitution(name='mean', shortname='mean', na_action=_doc_exclude_na,
-                  extras='')
-    @Appender(_stat_doc)
-    def mean(self, axis=0, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('mean', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nanmean, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    @Substitution(name='minimum', shortname='min', na_action=_doc_exclude_na,
-                  extras='')
-    @Appender(_stat_doc)
-    def min(self, axis=0, skipna=True, level=None):
-        """
-        Notes
-        -----
-        This method returns the minimum of the values in the DataFrame. If you
-        want the *index* of the minimum, use ``DataFrame.idxmin``. This is the
-        equivalent of the ``numpy.ndarray`` method ``argmin``.
-
-        See Also
-        --------
-        DataFrame.idxmin
-        Series.idxmin
-        """
-        if level is not None:
-            return self._agg_by_level('min', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nanmin, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    @Substitution(name='maximum', shortname='max', na_action=_doc_exclude_na,
-                  extras='')
-    @Appender(_stat_doc)
-    def max(self, axis=0, skipna=True, level=None):
-        """
-        Notes
-        -----
-        This method returns the maximum of the values in the DataFrame. If you
-        want the *index* of the maximum, use ``DataFrame.idxmax``. This is the
-        equivalent of the ``numpy.ndarray`` method ``argmax``.
-
-        See Also
-        --------
-        DataFrame.idxmax
-        Series.idxmax
-        """
-        if level is not None:
-            return self._agg_by_level('max', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nanmax, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    @Substitution(name='product', shortname='product',
-                  na_action='NA/null values are treated as 1', extras='')
-    @Appender(_stat_doc)
-    def prod(self, axis=0, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('prod', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nanprod, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    product = prod
-
-    @Substitution(name='median', shortname='median', na_action=_doc_exclude_na,
-                  extras='')
-    @Appender(_stat_doc)
-    def median(self, axis=0, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('median', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nanmedian, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    @Substitution(name='mean absolute deviation', shortname='mad',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def mad(self, axis=0, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('mad', axis=axis, level=level,
-                                      skipna=skipna)
-
-        frame = self._get_numeric_data()
-
-        axis = self._get_axis_number(axis)
-        if axis == 0:
-            demeaned = frame - frame.mean(axis=0)
-        else:
-            demeaned = frame.sub(frame.mean(axis=1), axis=0)
-        return np.abs(demeaned).mean(axis=axis, skipna=skipna)
-
-    @Substitution(name='variance', shortname='var',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc +
-              """
-        Normalized by N-1 (unbiased estimator).
-        """)
-    def var(self, axis=0, skipna=True, level=None, ddof=1):
-        if level is not None:
-            return self._agg_by_level('var', axis=axis, level=level,
-                                      skipna=skipna, ddof=ddof)
-        return self._reduce(nanops.nanvar, axis=axis, skipna=skipna,
-                            numeric_only=None, ddof=ddof)
-
-    @Substitution(name='standard deviation', shortname='std',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc +
-              """
-        Normalized by N-1 (unbiased estimator).
-        """)
-    def std(self, axis=0, skipna=True, level=None, ddof=1):
-        if level is not None:
-            return self._agg_by_level('std', axis=axis, level=level,
-                                      skipna=skipna, ddof=ddof)
-        return np.sqrt(self.var(axis=axis, skipna=skipna, ddof=ddof))
-
-    @Substitution(name='unbiased skewness', shortname='skew',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def skew(self, axis=0, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('skew', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nanskew, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    @Substitution(name='unbiased kurtosis', shortname='kurt',
-                  na_action=_doc_exclude_na, extras='')
-    @Appender(_stat_doc)
-    def kurt(self, axis=0, skipna=True, level=None):
-        if level is not None:
-            return self._agg_by_level('kurt', axis=axis, level=level,
-                                      skipna=skipna)
-        return self._reduce(nanops.nankurt, axis=axis, skipna=skipna,
-                            numeric_only=None)
-
-    def _agg_by_level(self, name, axis=0, level=0, skipna=True, **kwds):
-        grouped = self.groupby(level=level, axis=axis)
-        if hasattr(grouped, name) and skipna:
-            return getattr(grouped, name)(**kwds)
-        axis = self._get_axis_number(axis)
-        method = getattr(type(self), name)
-        applyf = lambda x: method(x, axis=axis, skipna=skipna, **kwds)
-        return grouped.aggregate(applyf)
 
     def _reduce(self, op, axis=0, skipna=True, numeric_only=None,
                 filter_type=None, **kwds):
@@ -4706,7 +4289,7 @@ class DataFrame(NDFrame):
 
 DataFrame._setup_axes(
     ['index', 'columns'], info_axis=1, stat_axis=0, axes_are_reversed=True)
-
+DataFrame._add_numeric_operations()
 
 _EMPTY_SERIES = Series([])
 
@@ -5113,25 +4696,6 @@ def _put_str(s, space):
     return ('%s' % s)[:space].ljust(space)
 
 
-def install_ipython_completers():  # pragma: no cover
-    """Register the DataFrame type with IPython's tab completion machinery, so
-    that it knows about accessing column names as attributes."""
-    from IPython.utils.generics import complete_object
-
-    @complete_object.when_type(DataFrame)
-    def complete_dataframe(obj, prev_completions):
-        return prev_completions + [c for c in obj.columns
-                                   if isinstance(c, compat.string_types) and compat.isidentifier(c)]
-
-
-# Importing IPython brings in about 200 modules, so we want to avoid it unless
-# we're in IPython (when those modules are loaded anyway).
-if "IPython" in sys.modules:  # pragma: no cover
-    try:
-        install_ipython_completers()
-    except Exception:
-        pass
-
 #----------------------------------------------------------------------
 # Add plotting methods to DataFrame
 
@@ -5173,6 +4737,8 @@ def boxplot(self, column=None, by=None, ax=None, fontsize=None,
     return ax
 DataFrame.boxplot = boxplot
 
+ops.add_flex_arithmetic_methods(DataFrame, **ops.frame_flex_funcs)
+ops.add_special_arithmetic_methods(DataFrame, **ops.frame_special_funcs)
 
 if __name__ == '__main__':
     import nose

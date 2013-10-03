@@ -16,6 +16,7 @@ from pandas.sparse.frame import SparseDataFrame
 from pandas.util.decorators import deprecate
 
 import pandas.core.common as com
+import pandas.core.ops as ops
 
 
 class SparsePanelAxis(object):
@@ -77,8 +78,9 @@ class SparsePanel(Panel):
                                     default_kind=default_kind)
             frames = new_frames
 
-        if not (isinstance(frames, dict)):
-            raise AssertionError()
+        if not isinstance(frames, dict):
+            raise TypeError('input must be a dict, a %r was passed' %
+                            type(frames).__name__)
 
         self.default_fill_value = fill_value = default_fill_value
         self.default_kind = kind = default_kind
@@ -99,7 +101,7 @@ class SparsePanel(Panel):
         # do we want to fill missing ones?
         for item in items:
             if item not in clean_frames:
-                raise Exception('column %s not found in data' % item)
+                raise ValueError('column %r not found in data' % item)
 
         self._items = items
         self.major_axis = major_axis
@@ -235,19 +237,25 @@ class SparsePanel(Panel):
         self._minor_axis = _ensure_index(com._unpickle_array(minor))
         self._frames = frames
 
-    def copy(self):
+    def copy(self, deep=True):
         """
-        Make a (shallow) copy of the sparse panel
+        Make a copy of the sparse panel
 
         Returns
         -------
         copy : SparsePanel
         """
-        return SparsePanel(self._frames.copy(), items=self.items,
-                           major_axis=self.major_axis,
-                           minor_axis=self.minor_axis,
-                           default_fill_value=self.default_fill_value,
-                           default_kind=self.default_kind)
+
+        d = self._construct_axes_dict()
+        if deep:
+            new_data = dict((k, v.copy(deep=True)) for k, v in compat.iteritems(self._frames))
+            d = dict((k, v.copy(deep=True)) for k, v in compat.iteritems(d))
+        else:
+            new_data = self._frames.copy()
+        d['default_fill_value']=self.default_fill_value
+        d['default_kind']=self.default_kind
+
+        return SparsePanel(new_data, **d)
 
     def to_frame(self, filter_observations=True):
         """
@@ -455,6 +463,19 @@ class SparsePanel(Panel):
                                default_fill_value=self.default_fill_value,
                                default_kind=self.default_kind)
 
+    # TODO: allow SparsePanel to work with flex arithmetic.
+    # pow and mod only work for scalars for now
+    def pow(self, val, *args, **kwargs):
+        """wrapper around `__pow__` (only works for scalar values)"""
+        return self.__pow__(val)
+
+    def mod(self, val, *args, **kwargs):
+        """wrapper around `__mod__` (only works for scalar values"""
+        return self.__mod__(val)
+
+# Sparse objects opt out of numexpr
+SparsePanel._add_aggregate_operations(use_numexpr=False)
+ops.add_special_arithmetic_methods(SparsePanel, use_numexpr=False, **ops.panel_special_funcs)
 SparseWidePanel = SparsePanel
 
 

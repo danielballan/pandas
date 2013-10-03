@@ -514,10 +514,10 @@ calendars which account for local holidays and local weekend conventions.
     holidays = ['2012-05-01', datetime(2013, 5, 1), np.datetime64('2014-05-01')]
     bday_egypt = CustomBusinessDay(holidays=holidays, weekmask=weekmask_egypt)
     dt = datetime(2013, 4, 30)
-    print dt + 2 * bday_egypt
+    print(dt + 2 * bday_egypt)
     dts = date_range(dt, periods=5, freq=bday_egypt).to_series()
-    print dts
-    print Series(dts.weekday, dts).map(Series('Mon Tue Wed Thu Fri Sat Sun'.split()))
+    print(dts)
+    print(Series(dts.weekday, dts).map(Series('Mon Tue Wed Thu Fri Sat Sun'.split())))
 
 .. note::
 
@@ -1108,6 +1108,20 @@ TimeSeries, aligning the data on the UTC timestamps:
 
 .. _timeseries.timedeltas:
 
+In some cases, localize cannot determine the DST and non-DST hours when there are
+duplicates.  This often happens when reading files that simply duplicate the hours.
+The infer_dst argument in tz_localize will attempt
+to determine the right offset.
+
+.. ipython:: python
+
+   rng_hourly = DatetimeIndex(['11/06/2011 00:00', '11/06/2011 01:00', 
+                               '11/06/2011 01:00', '11/06/2011 02:00', 
+                               '11/06/2011 03:00'])
+   rng_hourly.tz_localize('US/Eastern')
+   rng_hourly_eastern = rng_hourly.tz_localize('US/Eastern', infer_dst=True)
+   rng_hourly_eastern.values
+
 Time Deltas
 -----------
 
@@ -1203,6 +1217,25 @@ pass a timedelta to get a particular value.
    y.fillna(0)
    y.fillna(10)
    y.fillna(timedelta(days=-1,seconds=5))
+
+.. _timeseries.timedeltas_reductions:
+
+Time Deltas & Reductions
+------------------------
+
+.. warning::
+
+   A numeric reduction operation for ``timedelta64[ns]`` will return a single-element ``Series`` of
+   dtype ``timedelta64[ns]``.
+
+You can do numeric reduction operations on timedeltas.
+
+.. ipython:: python
+
+   y2 = y.fillna(timedelta(days=-1,seconds=5))
+   y2
+   y2.mean()
+   y2.quantile(.1)
 
 .. _timeseries.timedeltas_convert:
 

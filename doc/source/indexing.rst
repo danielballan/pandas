@@ -519,21 +519,14 @@ of the DataFrame):
 
    df[df['A'] > 0]
 
-Consider the ``isin`` method of Series, which returns a boolean vector that is
-true wherever the Series elements exist in the passed list. This allows you to
-select rows where one or more columns have values you want:
+List comprehensions and ``map`` method of Series can also be used to produce
+more complex criteria:
 
 .. ipython:: python
 
    df2 = DataFrame({'a' : ['one', 'one', 'two', 'three', 'two', 'one', 'six'],
                     'b' : ['x', 'y', 'y', 'x', 'y', 'x', 'x'],
                     'c' : randn(7)})
-   df2[df2['a'].isin(['one', 'two'])]
-
-List comprehensions and ``map`` method of Series can also be used to produce
-more complex criteria:
-
-.. ipython:: python
 
    # only want 'two' or 'three'
    criterion = df2['a'].map(lambda x: x.startswith('t'))
@@ -553,6 +546,26 @@ and :ref:`Advanced Indexing <indexing.advanced>` you may select along more than 
 
    df2.loc[criterion & (df2['b'] == 'x'),'b':'c']
 
+.. _indexing.basics.indexing_isin:
+
+Indexing with isin
+~~~~~~~~~~~~~~~~~~
+
+Consider the ``isin`` method of Series, which returns a boolean vector that is
+true wherever the Series elements exist in the passed list. This allows you to
+select rows where one or more columns have values you want:
+
+.. ipython:: python
+
+   s = Series(np.arange(5),index=np.arange(5)[::-1],dtype='int64')
+
+   s
+
+   s.isin([2, 4])
+
+   s[s.isin([2, 4])]
+
+
 DataFrame also has an ``isin`` method.  When calling ``isin``, pass a set of
 values as either an array or dict.  If values is an array, ``isin`` returns
 a DataFrame of booleans that is the same shape as the original DataFrame, with True
@@ -561,7 +574,7 @@ wherever the element is in the sequence of values.
 .. ipython:: python
 
    df = DataFrame({'vals': [1, 2, 3, 4], 'ids': ['a', 'b', 'f', 'n'],
-                'ids2': ['a', 'n', 'c', 'n']})
+                   'ids2': ['a', 'n', 'c', 'n']})
 
    values = ['a', 'b', 1, 3]
 
@@ -585,6 +598,17 @@ You can also describe columns using integer location:
 
    df.isin(values, iloc=True)
 
+Combine DataFrame's ``isin`` with the ``any()`` and ``all()`` methods to
+quickly select subsets of your data that meet a given criteria.
+To select a row where each column meets its own criterion:
+
+.. ipython:: python
+
+  values = {'ids': ['a', 'b'], 'ids2': ['a', 'c'], 'vals': [1, 3]}
+
+  row_mask = df.isin(values).all(1)
+
+  df[row_mask]
 
 The :meth:`~pandas.DataFrame.where` Method and Masking
 ------------------------------------------------------
@@ -1149,7 +1173,7 @@ and stop are **inclusive** in the label-based case:
 .. ipython:: python
 
    date1, date2 = dates[[2, 4]]
-   print date1, date2
+   print(date1, date2)
    df.ix[date1:date2]
    df['A'].ix[date1:date2]
 
@@ -1199,22 +1223,109 @@ numpy array.  For instance,
   dflookup = DataFrame(np.random.rand(20,4), columns = ['A','B','C','D'])
   dflookup.lookup(list(range(0,10,2)), ['B','C','A','B','D'])
 
-Setting values in mixed-type DataFrame
---------------------------------------
+.. _indexing.float64index:
 
-.. _indexing.mixed_type_setting:
+Float64Index
+------------
 
-Setting values on a mixed-type DataFrame or Panel is supported when using
-scalar values, though setting arbitrary vectors is not yet supported:
+.. versionadded:: 0.13.0
+
+By default a ``Float64Index`` will be automatically created when passing floating, or mixed-integer-floating values in index creation.
+This enables a pure label-based slicing paradigm that makes ``[],ix,loc`` for scalar indexing and slicing work exactly the
+same.
 
 .. ipython:: python
 
-   df2 = df[:4]
-   df2['foo'] = 'bar'
-   print df2
-   df2.ix[2] = np.nan
-   print df2
-   print df2.dtypes
+   indexf = Index([1.5, 2, 3, 4.5, 5])
+   indexf
+   sf = Series(range(5),index=indexf)
+   sf
+
+Scalar selection for ``[],.ix,.loc`` will always be label based. An integer will match an equal float index (e.g. ``3`` is equivalent to ``3.0``)
+
+.. ipython:: python
+
+   sf[3]
+   sf[3.0]
+   sf.ix[3]
+   sf.ix[3.0]
+   sf.loc[3]
+   sf.loc[3.0]
+
+The only positional indexing is via ``iloc``
+
+.. ipython:: python
+
+   sf.iloc[3]
+
+A scalar index that is not found will raise ``KeyError``
+
+Slicing is ALWAYS on the values of the index, for ``[],ix,loc`` and ALWAYS positional with ``iloc``
+
+.. ipython:: python
+
+   sf[2:4]
+   sf.ix[2:4]
+   sf.loc[2:4]
+   sf.iloc[2:4]
+
+In float indexes, slicing using floats is allowed
+
+.. ipython:: python
+
+   sf[2.1:4.6]
+   sf.loc[2.1:4.6]
+
+In non-float indexes, slicing using floats will raise a ``TypeError``
+
+.. code-block:: python
+
+   In [1]: Series(range(5))[3.5]
+   TypeError: the label [3.5] is not a proper indexer for this index type (Int64Index)
+
+   In [1]: Series(range(5))[3.5:4.5]
+   TypeError: the slice start [3.5] is not a proper indexer for this index type (Int64Index)
+
+Using a scalar float indexer will be deprecated in a future version, but is allowed for now.
+
+.. code-block:: python
+
+   In [3]: Series(range(5))[3.0]
+   Out[3]: 3
+
+Here is a typical use-case for using this type of indexing. Imagine that you have a somewhat
+irregular timedelta-like indexing scheme, but the data is recorded as floats. This could for
+example be millisecond offsets.
+
+.. ipython:: python
+
+   dfir = concat([DataFrame(randn(5,2),
+                     index=np.arange(5) * 250.0,
+                     columns=list('AB')),
+                  DataFrame(randn(6,2),
+                     index=np.arange(4,10) * 250.1,
+                     columns=list('AB'))])
+   dfir
+
+Selection operations then will always work on a value basis, for all selection operators.
+
+.. ipython:: python
+
+   dfir[0:1000.4]
+   dfir.loc[0:1001,'A']
+   dfir.loc[1000.4]
+
+You could then easily pick out the first 1 second (1000 ms) of data then.
+
+.. ipython:: python
+
+   dfir[0:1000]
+
+Of course if you need integer based selection, then use ``iloc``
+
+.. ipython:: python
+
+   dfir.iloc[0:5]
 
 .. _indexing.view_versus_copy:
 
@@ -1590,6 +1701,41 @@ selecting data at a particular level of a MultiIndex easier.
 
     df.xs('one', level='second')
 
+You can also select on the columns with :meth:`~pandas.MultiIndex.xs`, by
+providing the axis argument
+
+.. ipython:: python
+
+   df = df.T
+   df.xs('one', level='second', axis=1)
+
+:meth:`~pandas.MultiIndex.xs` also allows selection with multiple keys
+
+.. ipython:: python
+
+   df.xs(('one', 'bar'), level=('second', 'first'), axis=1)
+
+
+.. versionadded:: 0.13.0
+
+You can pass ``drop_level=False`` to :meth:`~pandas.MultiIndex.xs` to retain
+the level that was selected
+
+.. ipython::
+
+   df.xs('one', level='second', axis=1, drop_level=False)
+
+versus the result with ``drop_level=True`` (the default value)
+
+.. ipython::
+
+   df.xs('one', level='second', axis=1, drop_level=True)
+
+.. ipython::
+   :suppress:
+
+   df = df.T
+
 .. _indexing.advanced_reindex:
 
 Advanced reindexing and alignment with hierarchical index
@@ -1604,13 +1750,13 @@ instance:
    midx = MultiIndex(levels=[['zero', 'one'], ['x','y']],
                      labels=[[1,1,0,0],[1,0,1,0]])
    df = DataFrame(randn(4,2), index=midx)
-   print df
+   print(df)
    df2 = df.mean(level=0)
-   print df2
-   print df2.reindex(df.index, level=0)
+   print(df2)
+   print(df2.reindex(df.index, level=0))
    df_aligned, df2_aligned = df.align(df2, level=0)
-   print df_aligned
-   print df2_aligned
+   print(df_aligned)
+   print(df2_aligned)
 
 
 The need for sortedness with :class:`~pandas.MultiIndex`

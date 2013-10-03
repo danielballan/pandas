@@ -16,31 +16,40 @@ from pandas.io.excel import (
     register_writer
 )
 from pandas.util.testing import ensure_clean
+from pandas.core.config import set_option, get_option
 import pandas.util.testing as tm
 import pandas as pd
 
-def _skip_if_no_xlrd():
+
+def _skip_if_no_xlrd(version=(0, 9)):
     try:
         import xlrd
         ver = tuple(map(int, xlrd.__VERSION__.split(".")[:2]))
-        if ver < (0, 9):
-            raise nose.SkipTest('xlrd < 0.9, skipping')
+        if ver < version:
+            raise nose.SkipTest('xlrd < %s, skipping' % str(version))
     except ImportError:
         raise nose.SkipTest('xlrd not installed, skipping')
 
 
 def _skip_if_no_xlwt():
     try:
-        import xlwt # NOQA
+        import xlwt  # NOQA
     except ImportError:
         raise nose.SkipTest('xlwt not installed, skipping')
 
 
 def _skip_if_no_openpyxl():
     try:
-        import openpyxl # NOQA
+        import openpyxl  # NOQA
     except ImportError:
         raise nose.SkipTest('openpyxl not installed, skipping')
+
+
+def _skip_if_no_xlsxwriter():
+    try:
+        import xlsxwriter  # NOQA
+    except ImportError:
+        raise nose.SkipTest('xlsxwriter not installed, skipping')
 
 
 def _skip_if_no_excelsuite():
@@ -246,6 +255,26 @@ class ExcelReaderTests(SharedItems, unittest.TestCase):
         xl = ExcelFile(f)
         xl.parse('Sheet1', index_col=0, parse_dates=True)
 
+    def test_read_xlrd_Book(self):
+        _skip_if_no_xlrd()
+        _skip_if_no_xlwt()
+
+        import xlrd
+
+        pth = '__tmp_excel_read_worksheet__.xls'
+        df = self.frame
+
+        with ensure_clean(pth) as pth:
+            df.to_excel(pth, "SheetA")
+            book = xlrd.open_workbook(pth)
+
+            with ExcelFile(book, engine="xlrd") as xl:
+                result = xl.parse("SheetA")
+                tm.assert_frame_equal(df, result)
+
+            result = read_excel(book, sheetname="SheetA", engine="xlrd")
+            tm.assert_frame_equal(df, result)
+
     def test_xlsx_table(self):
         _skip_if_no_xlrd()
         _skip_if_no_openpyxl()
@@ -266,17 +295,36 @@ class ExcelReaderTests(SharedItems, unittest.TestCase):
         tm.assert_frame_equal(df4, df.ix[:-1])
         tm.assert_frame_equal(df4, df5)
 
+    def test_reader_closes_file(self):
+        _skip_if_no_xlrd()
+        _skip_if_no_openpyxl()
+
+        pth = os.path.join(self.dirpath, 'test.xlsx')
+        f = open(pth, 'rb')
+        with ExcelFile(f) as xlsx:
+            # parses okay
+            df = xlsx.parse('Sheet1', index_col=0)
+
+        self.assertTrue(f.closed)
+
 
 class ExcelWriterBase(SharedItems):
-    # test cases to run with different extensions
-    # for each writer
-    # to add a writer test, define two things:
-    # 1. a check_skip function that skips your tests if your writer isn't
-    # installed
-    # 2. add a property ext, which is the file extension that your writer writes to
+    # Base class for test cases to run with different Excel writers.
+    # To add a writer test, define the following:
+    # 1. A check_skip function that skips your tests if your writer isn't
+    #    installed.
+    # 2. Add a property ext, which is the file extension that your writer
+    #    writes to.
+    # 3. Add a property engine_name, which is the name of the writer class.
     def setUp(self):
         self.check_skip()
         super(ExcelWriterBase, self).setUp()
+        self.option_name = 'io.excel.%s.writer' % self.ext
+        self.prev_engine = get_option(self.option_name)
+        set_option(self.option_name, self.engine_name)
+
+    def tearDown(self):
+        set_option(self.option_name, self.prev_engine)
 
     def test_excel_sheet_by_name_raise(self):
         _skip_if_no_xlrd()
@@ -293,6 +341,24 @@ class ExcelWriterBase(SharedItems):
             tm.assert_frame_equal(gt, df)
 
             self.assertRaises(xlrd.XLRDError, xl.parse, '0')
+
+    def test_excelwriter_contextmanager(self):
+        ext = self.ext
+        pth = os.path.join(self.dirpath, 'testit.{0}'.format(ext))
+
+        with ensure_clean(pth) as pth:
+            with ExcelWriter(pth) as writer:
+                self.frame.to_excel(writer, 'Data1')
+                self.frame2.to_excel(writer, 'Data2')
+            # If above test passes with outdated xlrd, next test
+            # does require fresh xlrd
+            # http://nipy.bic.berkeley.edu/builders/pandas-py2.x-wheezy-sparc/builds/148/steps/shell_4/logs/stdio
+            _skip_if_no_xlrd((0, 9))
+            with ExcelFile(pth) as reader:
+                found_df = reader.parse('Data1')
+                found_df2 = reader.parse('Data2')
+                tm.assert_frame_equal(found_df, self.frame)
+                tm.assert_frame_equal(found_df2, self.frame2)
 
     def test_roundtrip(self):
         _skip_if_no_xlrd()
@@ -790,6 +856,7 @@ class ExcelWriterBase(SharedItems):
 
 class OpenpyxlTests(ExcelWriterBase, unittest.TestCase):
     ext = 'xlsx'
+    engine_name = 'openpyxl'
     check_skip = staticmethod(_skip_if_no_openpyxl)
 
     def test_to_excel_styleconverter(self):
@@ -820,6 +887,7 @@ class OpenpyxlTests(ExcelWriterBase, unittest.TestCase):
 
 class XlwtTests(ExcelWriterBase, unittest.TestCase):
     ext = 'xls'
+    engine_name = 'xlwt'
     check_skip = staticmethod(_skip_if_no_xlwt)
 
     def test_to_excel_styleconverter(self):
@@ -840,6 +908,52 @@ class XlwtTests(ExcelWriterBase, unittest.TestCase):
         self.assertEquals(xlwt.Borders.THIN, xls_style.borders.bottom)
         self.assertEquals(xlwt.Borders.THIN, xls_style.borders.left)
         self.assertEquals(xlwt.Alignment.HORZ_CENTER, xls_style.alignment.horz)
+
+
+class XlsxWriterTests(ExcelWriterBase, unittest.TestCase):
+    ext = 'xlsx'
+    engine_name = 'xlsxwriter'
+    check_skip = staticmethod(_skip_if_no_xlsxwriter)
+
+    # Override test from the Superclass to use assertAlmostEqual on the
+    # floating point values read back in from the output XlsxWriter file.
+    def test_roundtrip_indexlabels(self):
+        _skip_if_no_xlrd()
+        ext = self.ext
+        path = '__tmp_to_excel_from_excel_indexlabels__.' + ext
+
+        with ensure_clean(path) as path:
+
+            self.frame['A'][:5] = nan
+
+            self.frame.to_excel(path, 'test1')
+            self.frame.to_excel(path, 'test1', cols=['A', 'B'])
+            self.frame.to_excel(path, 'test1', header=False)
+            self.frame.to_excel(path, 'test1', index=False)
+
+            # test index_label
+            frame = (DataFrame(np.random.randn(10, 2)) >= 0)
+            frame.to_excel(path, 'test1', index_label=['test'])
+            reader = ExcelFile(path)
+            recons = reader.parse('test1', index_col=0).astype(np.int64)
+            frame.index.names = ['test']
+            self.assertEqual(frame.index.names, recons.index.names)
+
+            frame = (DataFrame(np.random.randn(10, 2)) >= 0)
+            frame.to_excel(
+                path, 'test1', index_label=['test', 'dummy', 'dummy2'])
+            reader = ExcelFile(path)
+            recons = reader.parse('test1', index_col=0).astype(np.int64)
+            frame.index.names = ['test']
+            self.assertEqual(frame.index.names, recons.index.names)
+
+            frame = (DataFrame(np.random.randn(10, 2)) >= 0)
+            frame.to_excel(path, 'test1', index_label='test')
+            reader = ExcelFile(path)
+            recons = reader.parse('test1', index_col=0).astype(np.int64)
+            frame.index.names = ['test']
+            self.assertAlmostEqual(frame.index.names, recons.index.names)
+
 
 class ExcelWriterEngineTests(unittest.TestCase):
     def test_ExcelWriter_dispatch(self):
@@ -892,26 +1006,6 @@ class ExcelWriterEngineTests(unittest.TestCase):
         check_called(lambda: df.to_excel('something.xlsx'))
         check_called(lambda: df.to_excel('something.xls', engine='dummy'))
         set_option('io.excel.xlsx.writer', val)
-
-
-class ExcelLegacyTests(SharedItems, unittest.TestCase):
-    def test_deprecated_from_parsers(self):
-
-        # since 0.12 changed the import path
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings(action='ignore', category=FutureWarning)
-
-            _skip_if_no_xlrd()
-            from pandas.io.parsers import ExcelFile as xf
-            xf(self.xls1)
-
-            _skip_if_no_xlwt()
-            with ensure_clean('test.xls') as path:
-                from pandas.io.parsers import ExcelWriter as xw
-                xw(path)
-
 
 if __name__ == '__main__':
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],

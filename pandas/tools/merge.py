@@ -17,13 +17,16 @@ from pandas.core.index import (Index, MultiIndex, _get_combined_index,
 from pandas.core.internals import (IntBlock, BoolBlock, BlockManager,
                                    make_block, _consolidate)
 from pandas.util.decorators import cache_readonly, Appender, Substitution
-from pandas.core.common import PandasError, ABCSeries
+from pandas.core.common import (PandasError, ABCSeries,
+                                is_timedelta64_dtype, is_datetime64_dtype,
+                                is_integer_dtype, isnull)
+
 import pandas.core.common as com
 
 import pandas.lib as lib
 import pandas.algos as algos
 import pandas.hashtable as _hash
-
+import pandas.tslib as tslib
 
 @Substitution('\nleft : DataFrame')
 @Appender(_merge_doc, indents=0)
@@ -404,17 +407,19 @@ class _MergeOperation(object):
         elif self.left_on is not None:
             n = len(self.left_on)
             if self.right_index:
-                if not ((len(self.left_on) == self.right.index.nlevels)):
-                    raise AssertionError()
+                if len(self.left_on) != self.right.index.nlevels:
+                    raise ValueError('len(left_on) must equal the number '
+                                         'of levels in the index of "right"')
                 self.right_on = [None] * n
         elif self.right_on is not None:
             n = len(self.right_on)
             if self.left_index:
-                if not ((len(self.right_on) == self.left.index.nlevels)):
-                    raise AssertionError()
+                if len(self.right_on) != self.left.index.nlevels:
+                    raise ValueError('len(right_on) must equal the number '
+                                         'of levels in the index of "left"')
                 self.left_on = [None] * n
-        if not ((len(self.right_on) == len(self.left_on))):
-            raise AssertionError()
+        if len(self.right_on) != len(self.left_on):
+            raise ValueError("len(right_on) must equal len(left_on)")
 
 
 def _get_join_indexers(left_keys, right_keys, sort=False, how='inner'):
@@ -427,8 +432,8 @@ def _get_join_indexers(left_keys, right_keys, sort=False, how='inner'):
     -------
 
     """
-    if not ((len(left_keys) == len(right_keys))):
-        raise AssertionError()
+    if len(left_keys) != len(right_keys):
+        raise AssertionError('left_key and right_keys must be the same length')
 
     left_labels = []
     right_labels = []
@@ -542,8 +547,11 @@ def _left_join_on_index(left_ax, right_ax, join_keys, sort=False):
 
     if len(join_keys) > 1:
         if not ((isinstance(right_ax, MultiIndex) and
-               len(join_keys) == right_ax.nlevels) ):
-            raise AssertionError()
+                 len(join_keys) == right_ax.nlevels)):
+            raise AssertionError("If more than one join key is given then "
+                                 "'right_ax' must be a MultiIndex and the "
+                                 "number of join keys must be the number of "
+                                 "levels in right_ax")
 
         left_tmp, right_indexer = \
             _get_multiindex_indexer(join_keys, right_ax,
@@ -642,8 +650,9 @@ class _BlockJoinOperation(object):
         if axis <= 0:  # pragma: no cover
             raise MergeError('Only axis >= 1 supported for this operation')
 
-        if not ((len(data_list) == len(indexers))):
-            raise AssertionError()
+        if len(data_list) != len(indexers):
+            raise AssertionError("data_list and indexers must have the same "
+                                 "length")
 
         self.units = []
         for data, indexer in zip(data_list, indexers):
@@ -655,6 +664,7 @@ class _BlockJoinOperation(object):
         self.join_index = join_index
         self.axis = axis
         self.copy = copy
+        self.offsets = None
 
         # do NOT sort
         self.result_items = _concat_indexes([d.items for d in data_list])
@@ -683,14 +693,29 @@ class _BlockJoinOperation(object):
         blockmaps = self._prepare_blocks()
         kinds = _get_merge_block_kinds(blockmaps)
 
-        result_blocks = []
-
         # maybe want to enable flexible copying <-- what did I mean?
+        kind_blocks = []
         for klass in kinds:
             klass_blocks = []
             for unit, mapping in blockmaps:
                 if klass in mapping:
                     klass_blocks.extend((unit, b) for b in mapping[klass])
+
+            # blocks that we are going to merge
+            kind_blocks.append(klass_blocks)
+
+        # create the merge offsets, essentially where the resultant blocks go in the result
+        if not self.result_items.is_unique:
+
+            # length of the merges for each of the klass blocks
+            self.offsets = np.zeros(len(blockmaps))
+            for kb in kind_blocks:
+                kl = list(b.get_merge_length() for unit, b in kb)
+                self.offsets += np.array(kl)
+
+        # merge the blocks to create the result blocks
+        result_blocks = []
+        for klass_blocks in kind_blocks:
             res_blk = self._get_merged_block(klass_blocks)
             result_blocks.append(res_blk)
 
@@ -726,7 +751,8 @@ class _BlockJoinOperation(object):
 
         n = len(fidx) if fidx is not None else out_shape[self.axis]
 
-        out_shape[0] = sum(blk.get_merge_length() for unit, blk in merge_chunks)
+        merge_lengths = list(blk.get_merge_length() for unit, blk in merge_chunks)
+        out_shape[0] = sum(merge_lengths)
         out_shape[self.axis] = n
 
         # Should use Fortran order??
@@ -746,9 +772,8 @@ class _BlockJoinOperation(object):
         # calculate by the existing placement plus the offset in the result set
         placement = None
         if not self.result_items.is_unique:
-            nchunks = len(merge_chunks)
-            offsets = np.array([0] + [ len(self.result_items) / nchunks ] * (nchunks-1)).cumsum()
             placement = []
+            offsets = np.append(np.array([0]),self.offsets.cumsum()[:-1])
             for (unit, blk), offset in zip(merge_chunks,offsets):
                 placement.extend(blk.ref_locs+offset)
 
@@ -958,8 +983,9 @@ class _Concatenator(object):
             axis = 1 if axis == 0 else 0
 
         self._is_series = isinstance(sample, ABCSeries)
-        if not ((0 <= axis <= sample.ndim)):
-            raise AssertionError()
+        if not 0 <= axis <= sample.ndim:
+            raise AssertionError("axis must be between 0 and {0}, "
+                                 "input was {1}".format(sample.ndim, axis))
 
         # note: this is the BlockManager axis (since DataFrame is transposed)
         self.axis = axis
@@ -1112,6 +1138,8 @@ class _Concatenator(object):
             return block
 
     def _concat_single_item(self, objs, item):
+        # this is called if we don't have consistent dtypes in a row-wise append
+
         all_values = []
         dtypes = set()
 
@@ -1125,29 +1153,65 @@ class _Concatenator(object):
             else:
                 all_values.append(None)
 
-        # this stinks
-        have_object = False
+        # figure out the resulting dtype of the combination
+        alls = set()
+        seen = []
         for dtype in dtypes:
+            d = dict([ (t,False) for t in ['object','datetime','timedelta','other'] ])
             if issubclass(dtype.type, (np.object_, np.bool_)):
-                have_object = True
-        if have_object:
-            empty_dtype = np.object_
-        else:
-            empty_dtype = np.float64
+                d['object'] = True
+                alls.add('object')
+            elif is_datetime64_dtype(dtype):
+                d['datetime'] = True
+                alls.add('datetime')
+            elif is_timedelta64_dtype(dtype):
+                d['timedelta'] = True
+                alls.add('timedelta')
+            else:
+                d['other'] = True
+                alls.add('other')
+            seen.append(d)
+
+        if 'datetime' in alls or 'timedelta' in alls:
+
+            if 'object' in alls or 'other' in alls:
+                for v, s in zip(all_values,seen):
+                    if s.get('datetime') or s.get('timedelta'):
+                        pass
+
+                    # if we have all null, then leave a date/time like type
+                    # if we have only that type left
+                    elif isnull(v).all():
+
+                        alls.remove('other')
+                        alls.remove('object')
+
+        # create the result
+        if 'object' in alls:
+            empty_dtype, fill_value = np.object_, np.nan
+        elif 'other' in alls:
+            empty_dtype, fill_value = np.float64, np.nan
+        elif 'datetime' in alls:
+            empty_dtype, fill_value = 'M8[ns]', tslib.iNaT
+        elif 'timedelta' in alls:
+            empty_dtype, fill_value = 'm8[ns]', tslib.iNaT
+        else: # pragma
+            raise AssertionError("invalid dtype determination in concat_single_item")
 
         to_concat = []
         for obj, item_values in zip(objs, all_values):
             if item_values is None:
                 shape = obj.shape[1:]
                 missing_arr = np.empty(shape, dtype=empty_dtype)
-                missing_arr.fill(np.nan)
+                missing_arr.fill(fill_value)
                 to_concat.append(missing_arr)
             else:
                 to_concat.append(item_values)
 
         # this method only gets called with axis >= 1
-        if not ((self.axis >= 1)):
-            raise AssertionError()
+        if self.axis < 1:
+            raise AssertionError("axis must be >= 1, input was"
+                                 " {0}".format(self.axis))
         return com._concat_compat(to_concat, axis=self.axis - 1)
 
     def _get_result_dim(self):
@@ -1166,8 +1230,9 @@ class _Concatenator(object):
                     continue
                 new_axes[i] = self._get_comb_axis(i)
         else:
-            if not ((len(self.join_axes) == ndim - 1)):
-                raise AssertionError()
+            if len(self.join_axes) != ndim - 1:
+                raise AssertionError("length of join_axes must not be "
+                                     "equal to {0}".format(ndim - 1))
 
             # ufff...
             indices = lrange(ndim)
@@ -1189,7 +1254,11 @@ class _Concatenator(object):
         if self._is_series:
             all_indexes = [x.index for x in self.objs]
         else:
-            all_indexes = [x._data.axes[i] for x in self.objs]
+            try:
+                all_indexes = [x._data.axes[i] for x in self.objs]
+            except IndexError:
+                types = [type(x).__name__ for x in self.objs]
+                raise TypeError("Cannot concatenate list of %s" % types)
 
         return _get_combined_index(all_indexes, intersect=self.intersect)
 
@@ -1200,6 +1269,10 @@ class _Concatenator(object):
             elif self.keys is None:
                 names = []
                 for x in self.objs:
+                    if not isinstance(x, Series):
+                        raise TypeError("Cannot concatenate type 'Series' "
+                                        "with object of type "
+                                        "%r" % type(x).__name__)
                     if x.name is not None:
                         names.append(x.name)
                     else:

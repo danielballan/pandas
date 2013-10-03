@@ -55,11 +55,29 @@ New features
   - ``plot(kind='kde')`` now accepts the optional parameters ``bw_method`` and
     ``ind``, passed to scipy.stats.gaussian_kde() (for scipy >= 0.11.0) to set
     the bandwidth, and to gkde.evaluate() to specify the indicies at which it
-    is evaluated, respecttively. See scipy docs.
-
+    is evaluated, respecttively. See scipy docs. (:issue:`4298`)
   - Added ``isin`` method to DataFrame (:issue:`4211`)
   - Clipboard functionality now works with PySide (:issue:`4282`)
   - New ``extract`` string method returns regex matches more conveniently (:issue:`4685`)
+  - Auto-detect field widths in read_fwf when unspecified (:issue:`4488`)
+
+Experimental Features
+~~~~~~~~~~~~~~~~~~~~~
+
+  - The new :func:`~pandas.eval` function implements expression evaluation using
+    ``numexpr`` behind the scenes. This results in large speedups for complicated
+    expressions involving large DataFrames/Series.
+  - :class:`~pandas.DataFrame` has a new :meth:`~pandas.DataFrame.eval` that
+    evaluates an expression in the context of the ``DataFrame``.
+  - A :meth:`~pandas.DataFrame.query` method has been added that allows
+    you to select elements of a ``DataFrame`` using a natural query syntax nearly
+    identical to Python syntax.
+  - ``pd.eval`` and friends now evaluate operations involving ``datetime64``
+    objects in Python space because ``numexpr`` cannot handle ``NaT`` values
+    (:issue:`4897`).
+  - Add msgpack support via ``pd.read_msgpack()`` and ``pd.to_msgpack()`` / ``df.to_msgpack()`` for serialization
+    of arbitrary pandas (and python objects) in a lightweight portable binary format (:issue:`686`)
+  - Added PySide support for the qtpandas DataFrameModel and DataFrameWidget.
 
 Improvements to existing features
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -94,6 +112,7 @@ Improvements to existing features
     is frequency conversion.
   - Timedelta64 support ``fillna/ffill/bfill`` with an integer interpreted as seconds,
     or a ``timedelta`` (:issue:`3371`)
+  - Box numeric ops on ``timedelta`` Series (:issue:`4984`)
   - Datetime64 support ``ffill/bfill``
   - Performance improvements with ``__getitem__`` on ``DataFrames`` with
     when the key is a column
@@ -114,21 +133,48 @@ Improvements to existing features
     ``io.excel.xls.writer``. (:issue:`4745`, :issue:`4750`)
   - ``Panel.to_excel()`` now accepts keyword arguments that will be passed to
     its ``DataFrame``'s ``to_excel()`` methods. (:issue:`4750`)
+  - Added XlsxWriter as an optional ``ExcelWriter``  engine. This is about 5x
+    faster than the default openpyxl xlsx writer and is equivalent in speed
+    to the xlwt xls writer module. (:issue:`4542`)
   - allow DataFrame constructor to accept more list-like objects, e.g. list of
-    ``collections.Sequence`` and ``array.Array`` objects (:issue:`3783`,:issue:`4297`, :issue:`4851`),
-    thanks @lgautier
+    ``collections.Sequence`` and ``array.Array`` objects (:issue:`3783`,
+    :issue:`4297`, :issue:`4851`), thanks @lgautier
   - DataFrame constructor now accepts a numpy masked record array (:issue:`3478`),
     thanks @jnothman
   - ``__getitem__`` with ``tuple`` key (e.g., ``[:, 2]``) on ``Series``
     without ``MultiIndex`` raises ``ValueError`` (:issue:`4759`, :issue:`4837`)
   - ``read_json`` now raises a (more informative) ``ValueError`` when the dict
     contains a bad key and ``orient='split'`` (:issue:`4730`, :issue:`4838`)
+  - ``read_stata`` now accepts Stata 13 format (:issue:`4291`)
+  - ``ExcelWriter`` and ``ExcelFile`` can be used as contextmanagers.
+    (:issue:`3441`, :issue:`4933`)
+  - ``pandas`` is now tested with two different versions of ``statsmodels``
+    (0.4.3 and 0.5.0) (:issue:`4981`).
+  - Better string representations of ``MultiIndex`` (including ability to roundtrip
+    via ``repr``). (:issue:`3347`, :issue:`4935`)
+  - Both ExcelFile and read_excel to accept an xlrd.Book for the io
+    (formerly path_or_buf) argument; this requires engine to be set.
+    (:issue:`4961`).
+  - ``concat`` now gives a more informative error message when passed objects
+    that cannot be concatenated (:issue:`4608`).
+  - Add ``halflife`` option to exponentially weighted moving functions (PR
+    :issue:`4998`)
+  - ``to_dict`` now takes ``records`` as a possible outtype.  Returns an array
+    of column-keyed dictionaries. (:issue:`4936`)
+  - ``tz_localize`` can infer a fall daylight savings transition based on the
+    structure of unlocalized data (:issue:`4230`)
+  - DatetimeIndex is now in the API documentation
+  - Improve support for converting R datasets to pandas objects (more
+    informative index for timeseries and numeric, support for factors, dist, and
+    high-dimensional arrays).
+  - :func:`~pandas.read_html` now supports the ``parse_dates``,
+    ``tupleize_cols`` and ``thousands`` parameters (:issue:`4770`).
 
 API Changes
 ~~~~~~~~~~~
 
   - ``DataFrame.reindex()`` and forward/backward filling now raises ValueError
-    if either index is not monotonic (:issue: `4483`, :issue: `4484`).
+    if either index is not monotonic (:issue: `4483` , :issue: `4484`).
   - ``pandas`` now is Python 2/3 compatible without the need for 2to3 thanks to
     @jtratner. As a result, pandas now uses iterators more extensively. This
     also led to the introduction of substantive parts of the Benjamin
@@ -179,6 +225,7 @@ API Changes
     - support ``timedelta64[ns]`` as a serialization type (:issue:`3577`)
     - store `datetime.date` objects as ordinals rather then timetuples to avoid timezone issues (:issue:`2852`),
       thanks @tavistmorph and @numpand
+    - ``numexpr`` 2.2.2 fixes incompatiblity in PyTables 2.4 (:issue:`4908`)
   - ``JSON``
 
     - added ``date_unit`` parameter to specify resolution of timestamps. Options
@@ -198,10 +245,19 @@ API Changes
       data - allowing metadata changes.
     - ``MultiIndex.astype()`` now only allows ``np.object_``-like dtypes and
       now returns a ``MultiIndex`` rather than an ``Index``. (:issue:`4039`)
+    - Added ``is_`` method to ``Index`` that allows fast equality comparison of
+      views (similar to ``np.may_share_memory`` but no false positives, and
+      changes on ``levels`` and ``labels`` setting on ``MultiIndex``).
+      (:issue:`4859` , :issue:`4909`)
+    - Aliased ``__iadd__`` to ``__add__``. (:issue:`4996`)
+    - Added ``is_`` method to ``Index`` that allows fast equality comparison of
+      views (similar to ``np.may_share_memory`` but no false positives, and
+      changes on ``levels`` and ``labels`` setting on ``MultiIndex``).
+      (:issue:`4859`, :issue:`4909`)
 
   - Infer and downcast dtype if ``downcast='infer'`` is passed to ``fillna/ffill/bfill`` (:issue:`4604`)
   - ``__nonzero__`` for all NDFrame objects, will now raise a ``ValueError``, this reverts back to (:issue:`1073`, :issue:`4633`)
-    behavior.
+    behavior. Add ``.bool()`` method to ``NDFrame`` objects to facilitate evaluating of single-element boolean Series
   - ``DataFrame.update()`` no longer raises a ``DataConflictError``, it now
     will raise a ``ValueError`` instead (if necessary) (:issue:`4732`)
   - ``Series.isin()`` and ``DataFrame.isin()``  now raise a ``TypeError`` when
@@ -216,6 +272,27 @@ API Changes
   - moved timedeltas support to pandas.tseries.timedeltas.py; add timedeltas string parsing,
     add top-level ``to_timedelta`` function
   - ``NDFrame`` now is compatible with Python's toplevel ``abs()`` function (:issue:`4821`).
+  - raise a ``TypeError`` on invalid comparison ops on Series/DataFrame (e.g. integer/datetime) (:issue:`4968`)
+  - Added a new index type, ``Float64Index``. This will be automatically created when passing floating values in index creation.
+    This enables a pure label-based slicing paradigm that makes ``[],ix,loc`` for scalar indexing and slicing work exactly the same.
+    Indexing on other index types are preserved (and positional fallback for ``[],ix``), with the exception, that floating point slicing
+    on indexes on non ``Float64Index`` will raise a ``TypeError``, e.g. ``Series(range(5))[3.5:4.5]`` (:issue:`263`)
+  - Make Categorical repr nicer (:issue:`4368`)
+  - Remove deprecated ``Factor`` (:issue:`3650`)
+  - Remove deprecated ``set_printoptions/reset_printoptions`` (:issue:``3046``)
+  - Remove deprecated ``_verbose_info`` (:issue:`3215`)
+  - Begin removing methods that don't make sense on ``GroupBy`` objects
+    (:issue:`4887`).
+  - Remove deprecated ``read_clipboard/to_clipboard/ExcelFile/ExcelWriter`` from ``pandas.io.parsers`` (:issue:`3717`)
+  - All non-Index NDFrames (``Series``, ``DataFrame``, ``Panel``, ``Panel4D``,
+    ``SparsePanel``, etc.), now support the entire set of arithmetic operators
+    and arithmetic flex methods (add, sub, mul, etc.). ``SparsePanel`` does not
+    support ``pow`` or ``mod`` with non-scalars. (:issue:`3765`)
+  - Provide numpy compatibility with 1.7 for a calling convention like ``np.prod(pandas_object)`` as numpy
+    call with additional keyword args (:issue:`4435`)
+  - Provide __dir__ method (and local context) for tab completion / remove ipython completers code
+    (:issue:`4501`)
+
 
 Internal Refactoring
 ~~~~~~~~~~~~~~~~~~~~
@@ -225,7 +302,7 @@ which is the base class currently for ``DataFrame`` and ``Panel``, to unify meth
 and behaviors. Series formerly subclassed directly from ``ndarray``. (:issue:`4080`, :issue:`3862`, :issue:`816`)
 See :ref:`Internal Refactoring<whatsnew_0130.refactoring>`
 
-- Refactor of series.py/frame.py/panel.py to move common code to generic.py
+ - Refactor of series.py/frame.py/panel.py to move common code to generic.py
 
   - added ``_setup_axes`` to created generic NDFrame structures
   - moved methods
@@ -241,14 +318,15 @@ See :ref:`Internal Refactoring<whatsnew_0130.refactoring>`
     - ``reindex,reindex_axis,take``
     - ``truncate`` (moved to become part of ``NDFrame``)
 
-- These are API changes which make ``Panel`` more consistent with ``DataFrame``
+ - These are API changes which make ``Panel`` more consistent with ``DataFrame``
 
   - ``swapaxes`` on a ``Panel`` with the same axes specified now return a copy
   - support attribute access for setting
-  - filter supports same api as original ``DataFrame`` filter
+  - ``filter`` supports same api as original ``DataFrame`` filter
+  - ``fillna`` refactored to ``core/generic.py``, while > 3ndim is ``NotImplemented``
 
-- Series now inherits from ``NDFrame`` rather than directly from ``ndarray``.
-  There are several minor changes that affect the API.
+ - Series now inherits from ``NDFrame`` rather than directly from ``ndarray``.
+   There are several minor changes that affect the API.
 
   - numpy functions that do not support the array interface will now
     return ``ndarrays`` rather than series, e.g. ``np.diff``, ``np.ones_like``, ``np.where``
@@ -257,7 +335,7 @@ See :ref:`Internal Refactoring<whatsnew_0130.refactoring>`
   - ``TimeSeries`` is now an alias for ``Series``. the property ``is_time_series``
     can be used to distinguish (if desired)
 
-- Refactor of Sparse objects to use BlockManager
+ - Refactor of Sparse objects to use BlockManager
 
   - Created a new block type in internals, ``SparseBlock``, which can hold multi-dtypes
     and is non-consolidatable. ``SparseSeries`` and ``SparseDataFrame`` now inherit
@@ -271,40 +349,34 @@ See :ref:`Internal Refactoring<whatsnew_0130.refactoring>`
   - enable setitem on ``SparseSeries`` for boolean/integer/slices
   - ``SparsePanels`` implementation is unchanged (e.g. not using BlockManager, needs work)
 
-- added ``ftypes`` method to Series/DataFame, similar to ``dtypes``, but indicates
-  if the underlying is sparse/dense (as well as the dtype)
-- All ``NDFrame`` objects now have a ``_prop_attributes``, which can be used to indcated various
-  values to propogate to a new object from an existing (e.g. name in ``Series`` will follow
-  more automatically now)
-- Internal type checking is now done via a suite of generated classes, allowing ``isinstance(value, klass)``
-  without having to directly import the klass, courtesy of @jtratner
-- Bug in Series update where the parent frame is not updating its cache based on
-  changes (:issue:`4080`) or types (:issue:`3217`), fillna (:issue:`3386`)
-- Indexing with dtype conversions fixed (:issue:`4463`, :issue:`4204`)
-- Refactor ``Series.reindex`` to core/generic.py (:issue:`4604`, :issue:`4618`), allow ``method=`` in reindexing
-  on a Series to work
-- ``Series.copy`` no longer accepts the ``order`` parameter and is now consistent with ``NDFrame`` copy
-- Refactor ``rename`` methods to core/generic.py; fixes ``Series.rename`` for (:issue:`4605`), and adds ``rename``
-  with the same signature for ``Panel``
-- Series (for index) / Panel (for items) now as attribute access to its elements  (:issue:`1903`)
-- Refactor ``clip`` methods to core/generic.py (:issue:`4798`)
-- Refactor of ``_get_numeric_data/_get_bool_data`` to core/generic.py, allowing Series/Panel functionaility
-- Refactor of Series arithmetic with time-like objects (datetime/timedelta/time
-  etc.) into a separate, cleaned up wrapper class. (:issue:`4613`)
-- Complex compat for ``Series`` with ``ndarray``. (:issue:`4819`)
-- Removed unnecessary ``rwproperty`` from codebase in favor of builtin property. (:issue:`4843`)
-
-Experimental Features
-~~~~~~~~~~~~~~~~~~~~~
-
-- The new :func:`~pandas.eval` function implements expression evaluation using
-  ``numexpr`` behind the scenes. This results in large speedups for complicated
-  expressions involving large DataFrames/Series.
-- :class:`~pandas.DataFrame` has a new :meth:`~pandas.DataFrame.eval` that
-  evaluates an expression in the context of the ``DataFrame``.
-- A :meth:`~pandas.DataFrame.query` method has been added that allows
-  you to select elements of a ``DataFrame`` using a natural query syntax nearly
-  identical to Python syntax.
+ - added ``ftypes`` method to Series/DataFame, similar to ``dtypes``, but indicates
+   if the underlying is sparse/dense (as well as the dtype)
+ - All ``NDFrame`` objects now have a ``_prop_attributes``, which can be used to indcated various
+   values to propogate to a new object from an existing (e.g. name in ``Series`` will follow
+   more automatically now)
+ - Internal type checking is now done via a suite of generated classes, allowing ``isinstance(value, klass)``
+   without having to directly import the klass, courtesy of @jtratner
+ - Bug in Series update where the parent frame is not updating its cache based on
+   changes (:issue:`4080`) or types (:issue:`3217`), fillna (:issue:`3386`)
+ - Indexing with dtype conversions fixed (:issue:`4463`, :issue:`4204`)
+ - Refactor ``Series.reindex`` to core/generic.py (:issue:`4604`, :issue:`4618`), allow ``method=`` in reindexing
+   on a Series to work
+ - ``Series.copy`` no longer accepts the ``order`` parameter and is now consistent with ``NDFrame`` copy
+ - Refactor ``rename`` methods to core/generic.py; fixes ``Series.rename`` for (:issue:`4605`), and adds ``rename``
+   with the same signature for ``Panel``
+ - Series (for index) / Panel (for items) now as attribute access to its elements  (:issue:`1903`)
+ - Refactor ``clip`` methods to core/generic.py (:issue:`4798`)
+ - Refactor of ``_get_numeric_data/_get_bool_data`` to core/generic.py, allowing Series/Panel functionaility
+ - Refactor of Series arithmetic with time-like objects (datetime/timedelta/time
+   etc.) into a separate, cleaned up wrapper class. (:issue:`4613`)
+ - Complex compat for ``Series`` with ``ndarray``. (:issue:`4819`)
+ - Removed unnecessary ``rwproperty`` from codebase in favor of builtin property. (:issue:`4843`)
+ - Refactor object level numeric methods (mean/sum/min/max...) from object level modules to
+   ``core/generic.py`` (:issue:`4435`).
+ - Refactor cum objects to core/generic.py (:issue:`4435`), note that these have a more numpy-like
+   function signature.
+ - :func:`~pandas.read_html` now uses ``TextParser`` to parse HTML data from
+   bs4/lxml (:issue:`4770`).
 
 .. _release.bug_fixes-0.13.0:
 
@@ -320,6 +392,8 @@ Bug Fixes
     - appending a 0-len table will work correctly (:issue:`4273`)
     - ``to_hdf`` was raising when passing both arguments ``append`` and ``table`` (:issue:`4584`)
     - reading from a store with duplicate columns across dtypes would raise (:issue:`4767`)
+    - Fixed a bug where ``ValueError`` wasn't correctly raised when column names
+      weren't strings (:issue:`4956`)
   - Fixed bug in tslib.tz_convert(vals, tz1, tz2): it could raise IndexError exception while
     trying to access trans[pos + 1] (:issue:`4496`)
   - The ``by`` argument now works correctly with the ``layout`` argument
@@ -347,6 +421,8 @@ Bug Fixes
     dtypes, surfaced in (:issue:`4377`)
   - Fixed bug with duplicate columns and type conversion in ``read_json`` when
     ``orient='split'`` (:issue:`4377`)
+  - Fixed JSON bug where locales with decimal separators other than '.' threw
+    exceptions when encoding / decoding certain values. (:issue:`4918`)
   - Fix ``.iat`` indexing with a ``PeriodIndex`` (:issue:`4390`)
   - Fixed an issue where ``PeriodIndex`` joining with self was returning a new
     instance rather than the same instance (:issue:`4379`); also adds a test
@@ -369,6 +445,7 @@ Bug Fixes
     (:issue:`4170`, :issue:`4440`)
   - Fixed Panel slicing issued in ``xs`` that was returning an incorrect dimmed object
     (:issue:`4016`)
+  - Fix resampling bug where custom reduce function not used if only one group (:issue:`3849`, :issue:`4494`)
   - Fixed Panel assignment with a transposed frame (:issue:`3830`)
   - Raise on set indexing with a Panel and a Panel as a value which needs alignment (:issue:`3777`)
   - frozenset objects now raise in the ``Series`` constructor (:issue:`4482`,
@@ -411,7 +488,7 @@ Bug Fixes
   - Bug in multi-indexing with a partial string selection as one part of a MultIndex (:issue:`4758`)
   - Bug with reindexing on the index with a non-unique index will now raise ``ValueError`` (:issue:`4746`)
   - Bug in setting with ``loc/ix`` a single indexer with a multi-index axis and a numpy array, related to (:issue:`3777`)
-  - Bug in concatenation with duplicate columns across dtypes not merging with axis=0 (:issue:`4771`)
+  - Bug in concatenation with duplicate columns across dtypes not merging with axis=0 (:issue:`4771`, :issue:`4975`)
   - Bug in ``iloc`` with a slice index failing (:issue:`4771`)
   - Incorrect error message with no colspecs or width in ``read_fwf``. (:issue:`4774`)
   - Fix bugs in indexing in a Series with a duplicate index (:issue:`4548`, :issue:`4550`)
@@ -433,6 +510,46 @@ Bug Fixes
   - Fix an issue in TextFileReader w/ Python engine (i.e. PythonParser)
     with thousands != "," (:issue:`4596`)
   - Bug in getitem with a duplicate index when using where (:issue:`4879`)
+  - Fix Type inference code coerces float column into datetime (:issue:`4601`)
+  - Fixed ``_ensure_numeric`` does not check for complex numbers (:issue:`4902`)
+  - Fixed a bug in ``Series.hist`` where two figures were being created when
+    the ``by`` argument was passed (:issue:`4112`, :issue:`4113`).
+  - Fixed a bug in ``convert_objects`` for > 2 ndims (:issue:`4937`)
+  - Fixed a bug in DataFrame/Panel cache insertion and subsequent indexing (:issue:`4939`)
+  - Fixed string methods for ``FrozenNDArray`` and ``FrozenList`` (:issue:`4929`)
+  - Fixed a bug with setting invalid or out-of-range values in indexing
+    enlargement scenarios (:issue:`4940`)
+  - Tests for fillna on empty Series (:issue:`4346`), thanks @immerrr
+  - Fixed ``copy()`` to shallow copy axes/indices as well and thereby keep
+    separate metadata. (:issue:`4202`, :issue:`4830`)
+  - Fixed skiprows option in Python parser for read_csv (:issue:`4382`)
+  - Fixed bug preventing ``cut`` from working with ``np.inf`` levels without
+    explicitly passing labels (:issue:`3415`)
+  - Fixed wrong check for overlapping in ``DatetimeIndex.union`` (:issue:`4564`)
+  - Fixed conflict between thousands separator and date parser in csv_parser (:issue:`4678`)
+  - Fix appending when dtypes are not the same (error showing mixing float/np.datetime64) (:issue:`4993`)
+  - Fix repr for DateOffset. No longer show duplicate entries in kwds.
+    Removed unused offset fields. (:issue:`4638`)
+  - Fixed wrong index name during read_csv if using usecols. Applies to c parser only. (:issue:`4201`)
+  - ``Timestamp`` objects can now appear in the left hand side of a comparison
+    operation with a ``Series`` or ``DataFrame`` object (:issue:`4982`).
+  - Fix a bug when indexing with ``np.nan`` via ``iloc/loc`` (:issue:`5016`)
+  - Fixed a bug where low memory c parser could create different types in different
+    chunks of the same file. Now coerces to numerical type or raises warning. (:issue:`3866`)
+  - Fix a bug where reshaping a ``Series`` to its own shape raised ``TypeError`` (:issue:`4554`)
+    and other reshaping issues.
+  - Bug in setting with ``ix/loc`` and a mixed int/string index (:issue:`4544`)
+  - Make sure series-series boolean comparions are label based (:issue:`4947`)
+  - Bug in multi-level indexing with a Timestamp partial indexer (:issue:`4294`)
+  - Tests/fix for multi-index construction of an all-nan frame (:isue:`4078`)
+  - Fixed a bug where :func:`~pandas.read_html` wasn't correctly inferring
+    values of tables with commas (:issue:`5029`)
+  - Fixed a bug where :func:`~pandas.read_html` wasn't providing a stable
+    ordering of returned tables (:issue:`4770`, :issue:`5029`).
+  - Fixed a bug where :func:`~pandas.read_html` was incorrectly parsing when
+    passed ``index_col=0`` (:issue:`5066`).
+  - Fixed a bug where :func:`~pandas.read_html` was incorrectly infering the
+    type of headers (:issue:`5048`).
 
 
 pandas 0.12.0

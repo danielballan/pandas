@@ -7,7 +7,7 @@ try:
 except Exception:  # pragma: no cover
     import sys
     e = sys.exc_info()[1]  # Py25 and Py3 current exception syntax conflict
-    print (e)
+    print(e)
     if 'No module named lib' in str(e):
         raise ImportError('C extensions not built: if you installed already '
                           'verify that you are not importing from the source '
@@ -21,7 +21,6 @@ import numpy as np
 # XXX: HACK for NumPy 1.5.1 to suppress warnings
 try:
     np.seterr(all='ignore')
-    # np.set_printoptions(suppress=True)
 except Exception:  # pragma: no cover
     pass
 

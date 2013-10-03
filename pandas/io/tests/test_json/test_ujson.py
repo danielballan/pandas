@@ -29,7 +29,7 @@ import pandas.util.testing as tm
 def _skip_if_python_ver(skip_major, skip_minor=None):
     major, minor = sys.version_info[:2]
     if major == skip_major and (skip_minor is None or minor == skip_minor):
-        raise nose.SkipTest
+        raise nose.SkipTest("skipping Python version %d.%d" % (major, minor))
 
 json_unicode = (json.dumps if sys.version_info[0] >= 3
                 else partial(json.dumps, encoding="utf-8"))
@@ -83,6 +83,19 @@ class UltraJSONTests(TestCase):
         decoded = ujson.decode(encoded)
         self.assertEqual(sut, decoded)
 
+    def test_encodeNonCLocale(self):
+        import locale
+        savedlocale = locale.getlocale(locale.LC_NUMERIC)
+        try:
+            locale.setlocale(locale.LC_NUMERIC, 'it_IT.UTF-8')
+        except:
+            try:
+                locale.setlocale(locale.LC_NUMERIC, 'Italian_Italy')
+            except:
+                raise nose.SkipTest('Could not set locale for testing')
+        self.assertEqual(ujson.loads(ujson.dumps(4.78e60)), 4.78e60)
+        self.assertEqual(ujson.loads('4.78', precise_float=True), 4.78)
+        locale.setlocale(locale.LC_NUMERIC, savedlocale)
 
     def test_encodeDecodeLongDecimal(self):
         sut = {u('a'): -528656961.4399388}
@@ -350,7 +363,8 @@ class UltraJSONTests(TestCase):
     def test_npy_nat(self):
         from distutils.version import LooseVersion
         if LooseVersion(np.__version__) < '1.7.0':
-            raise nose.SkipTest
+            raise nose.SkipTest("numpy version < 1.7.0, is "
+                                "{0}".format(np.__version__))
 
         input = np.datetime64('NaT')
         assert ujson.encode(input) == 'null', "Expected null"

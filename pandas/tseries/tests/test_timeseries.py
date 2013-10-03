@@ -3,6 +3,9 @@ from datetime import datetime, time, timedelta
 import sys
 import os
 import unittest
+import operator
+
+from distutils.version import LooseVersion
 
 import nose
 
@@ -10,7 +13,7 @@ import numpy as np
 randn = np.random.randn
 
 from pandas import (Index, Series, TimeSeries, DataFrame,
-                    isnull, date_range, Timestamp, DatetimeIndex,
+                    isnull, date_range, Timestamp, Period, DatetimeIndex,
                     Int64Index, to_datetime, bdate_range)
 
 from pandas.core.daterange import DateRange
@@ -40,6 +43,7 @@ import pandas.compat as compat
 from pandas.core.datetools import BDay
 import pandas.core.common as com
 from pandas import concat
+from pandas import _np_version_under1p7
 
 from numpy.testing.decorators import slow
 
@@ -48,7 +52,7 @@ def _skip_if_no_pytz():
     try:
         import pytz
     except ImportError:
-        raise nose.SkipTest
+        raise nose.SkipTest("pytz not installed")
 
 
 class TestTimeSeriesDuplicates(unittest.TestCase):
@@ -273,6 +277,12 @@ def assert_range_equal(left, right):
 
 class TestTimeSeries(unittest.TestCase):
     _multiprocess_can_split_ = True
+
+    def test_is_(self):
+        dti = DatetimeIndex(start='1/1/2005', end='12/1/2005', freq='M')
+        self.assertTrue(dti.is_(dti))
+        self.assertTrue(dti.is_(dti.view()))
+        self.assertFalse(dti.is_(dti.copy()))
 
     def test_dti_slicing(self):
         dti = DatetimeIndex(start='1/1/2005', end='12/1/2005', freq='M')
@@ -654,8 +664,8 @@ class TestTimeSeries(unittest.TestCase):
     def test_index_astype_datetime64(self):
         idx = Index([datetime(2012, 1, 1)], dtype=object)
 
-        if np.__version__ >= '1.7':
-            raise nose.SkipTest
+        if not _np_version_under1p7:
+            raise nose.SkipTest("test only valid in numpy < 1.7")
 
         casted = idx.astype(np.dtype('M8[D]'))
         expected = DatetimeIndex(idx.values)
@@ -1323,6 +1333,28 @@ class TestTimeSeries(unittest.TestCase):
         pts = ts.to_period('M')
         self.assert_(pts.index.equals(exp.index.asfreq('M')))
 
+    def create_dt64_based_index(self):
+        data = [Timestamp('2007-01-01 10:11:12.123456Z'),
+                Timestamp('2007-01-01 10:11:13.789123Z')]
+        index = DatetimeIndex(data)
+        return index
+
+    def test_to_period_millisecond(self):
+        index = self.create_dt64_based_index()
+
+        period = index.to_period(freq='L')
+        self.assertEqual(2, len(period))
+        self.assertEqual(period[0], Period('2007-01-01 10:11:12.123Z', 'L'))
+        self.assertEqual(period[1], Period('2007-01-01 10:11:13.789Z', 'L'))
+
+    def test_to_period_microsecond(self):
+        index = self.create_dt64_based_index()
+
+        period = index.to_period(freq='U')
+        self.assertEqual(2, len(period))
+        self.assertEqual(period[0], Period('2007-01-01 10:11:12.123456Z', 'U'))
+        self.assertEqual(period[1], Period('2007-01-01 10:11:13.789123Z', 'U'))
+
     def test_to_period_tz(self):
         _skip_if_no_pytz()
         from dateutil.tz import tzlocal
@@ -1589,7 +1621,7 @@ class TestTimeSeries(unittest.TestCase):
                         (3, np.datetime64('2012-07-04'))],
                        columns=['a', 'date'])
         result = df.groupby('a').first()
-        self.assertEqual(result['date'][3], datetime(2012,7,3))
+        self.assertEqual(result['date'][3], Timestamp('2012-07-03'))
 
     def test_series_interpolate_intraday(self):
         # #1698
@@ -1708,6 +1740,13 @@ def _simple_ts(start, end, freq='D'):
 
 class TestDatetimeIndex(unittest.TestCase):
     _multiprocess_can_split_ = True
+
+    def test_hash_error(self):
+        index = date_range('20010101', periods=10)
+        with tm.assertRaisesRegexp(TypeError,
+                                   "unhashable type: %r" %
+                                   type(index).__name__):
+            hash(index)
 
     def test_stringified_slice_with_tz(self):
         #GH2658
@@ -1848,6 +1887,15 @@ class TestDatetimeIndex(unittest.TestCase):
         right = DatetimeIndex(['2012-05-29 13:04:21.322000',
                                '2012-05-11 15:27:24.873000',
                                '2012-05-11 15:31:05.350000'])
+
+        result = left.union(right)
+        exp = DatetimeIndex(sorted(set(list(left)) | set(list(right))))
+        self.assert_(result.equals(exp))
+
+    def test_union_bug_4564(self):
+        from pandas import DateOffset
+        left = date_range("2013-01-01", "2013-02-01")
+        right = left + DateOffset(minutes=15)
 
         result = left.union(right)
         exp = DatetimeIndex(sorted(set(list(left)) | set(list(right))))
@@ -1994,6 +2042,28 @@ class TestDatetimeIndex(unittest.TestCase):
         for kind in kinds:
             joined = index.join(index, how=kind)
             self.assert_(index is joined)
+
+    def assert_index_parameters(self, index):
+        assert index.freq == '40960N'
+        assert index.inferred_freq == '40960N'
+
+    def test_ns_index(self):
+
+        if _np_version_under1p7:
+            raise nose.SkipTest
+
+        nsamples = 400
+        ns = int(1e9 / 24414)
+        dtstart = np.datetime64('2012-09-20T00:00:00')
+
+        dt = dtstart + np.arange(nsamples) * np.timedelta64(ns, 'ns')
+        freq = ns * pd.datetools.Nano()
+        index = pd.DatetimeIndex(dt, freq=freq, name='time')
+        self.assert_index_parameters(index)
+
+        new_index = pd.DatetimeIndex(start=index[0], end=index[-1], freq=index.freq)
+        self.assert_index_parameters(new_index)
+
 
 class TestDatetime64(unittest.TestCase):
     """
@@ -2492,6 +2562,74 @@ class TestTimestamp(unittest.TestCase):
         stamp = Timestamp(datetime(2011, 1, 1))
         self.assertEquals(d[stamp], 5)
 
+    def test_timestamp_compare_scalars(self):
+        # case where ndim == 0
+        lhs = np.datetime64(datetime(2013, 12, 6))
+        rhs = Timestamp('now')
+        nat = Timestamp('nat')
+
+        ops = {'gt': 'lt', 'lt': 'gt', 'ge': 'le', 'le': 'ge', 'eq': 'eq',
+            'ne': 'ne'}
+
+        for left, right in ops.items():
+            left_f = getattr(operator, left)
+            right_f = getattr(operator, right)
+
+            if pd._np_version_under1p7:
+                # you have to convert to timestamp for this to work with numpy
+                # scalars
+                expected = left_f(Timestamp(lhs), rhs)
+
+                # otherwise a TypeError is thrown
+                if left not in ('eq', 'ne'):
+                    with tm.assertRaises(TypeError):
+                        left_f(lhs, rhs)
+            else:
+                expected = left_f(lhs, rhs)
+
+            result = right_f(rhs, lhs)
+            self.assertEqual(result, expected)
+
+            expected = left_f(rhs, nat)
+            result = right_f(nat, rhs)
+            self.assertEqual(result, expected)
+
+    def test_timestamp_compare_series(self):
+        # make sure we can compare Timestamps on the right AND left hand side
+        # GH4982
+        s = Series(date_range('20010101', periods=10), name='dates')
+        s_nat = s.copy(deep=True)
+
+        s[0] = pd.Timestamp('nat')
+        s[3] = pd.Timestamp('nat')
+
+        ops = {'lt': 'gt', 'le': 'ge', 'eq': 'eq', 'ne': 'ne'}
+
+        for left, right in ops.items():
+            left_f = getattr(operator, left)
+            right_f = getattr(operator, right)
+
+            # no nats
+            expected = left_f(s, Timestamp('20010109'))
+            result = right_f(Timestamp('20010109'), s)
+            tm.assert_series_equal(result, expected)
+
+            # nats
+            expected = left_f(s, Timestamp('nat'))
+            result = right_f(Timestamp('nat'), s)
+            tm.assert_series_equal(result, expected)
+
+            # compare to timestamp with series containing nats
+            expected = left_f(s_nat, Timestamp('20010109'))
+            result = right_f(Timestamp('20010109'), s_nat)
+            tm.assert_series_equal(result, expected)
+
+            # compare to nat with series containing nats
+            expected = left_f(s_nat, Timestamp('nat'))
+            result = right_f(Timestamp('nat'), s_nat)
+            tm.assert_series_equal(result, expected)
+
+
 class TestSlicing(unittest.TestCase):
 
     def test_slice_year(self):
@@ -2612,6 +2750,24 @@ class TestSlicing(unittest.TestCase):
         def f():
             df_multi.loc[('2013-06-19', 'ACCT1', 'ABC')]
         self.assertRaises(KeyError, f)
+
+        # GH 4294
+        # partial slice on a series mi
+        s = pd.DataFrame(randn(1000, 1000), index=pd.date_range('2000-1-1', periods=1000)).stack()
+
+        s2 = s[:-1].copy()
+        expected = s2['2000-1-4']
+        result = s2[pd.Timestamp('2000-1-4')]
+        assert_series_equal(result, expected)
+
+        result = s[pd.Timestamp('2000-1-4')]
+        expected = s['2000-1-4']
+        assert_series_equal(result, expected)
+
+        df2 = pd.DataFrame(s)
+        expected = df2.ix['2000-1-4']
+        result = df2.ix[pd.Timestamp('2000-1-4')]
+        assert_frame_equal(result, expected)
 
     def test_date_range_normalize(self):
         snap = datetime.today()
@@ -2759,6 +2915,7 @@ class TestSlicing(unittest.TestCase):
         df = df.applymap(lambda x: x + BDay())
 
         self.assertTrue(df.x1.dtype == 'M8[ns]')
+
 
 if __name__ == '__main__':
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],

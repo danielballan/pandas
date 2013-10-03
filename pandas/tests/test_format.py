@@ -202,7 +202,8 @@ class TestDataFrameFormatting(unittest.TestCase):
     def test_repr_max_columns_max_rows(self):
         term_width, term_height = get_terminal_size()
         if term_width < 10 or term_height < 10:
-            raise nose.SkipTest
+            raise nose.SkipTest("terminal size too small, "
+                                "{0} x {1}".format(term_width, term_height))
 
         def mkframe(n):
             index = ['%05d' % i for i in range(n)]
@@ -766,7 +767,7 @@ class TestDataFrameFormatting(unittest.TestCase):
         from pandas.core.common import pprint_thing as pp_t
 
         if PY3:
-            raise nose.SkipTest()
+            raise nose.SkipTest("doesn't work on Python 3")
 
         self.assertEquals(pp_t('a') , u('a'))
         self.assertEquals(pp_t(u('a')) , u('a'))
@@ -1110,10 +1111,10 @@ class TestDataFrameFormatting(unittest.TestCase):
         result = df.to_string()
         expected = ('     0\n'
                     '1.5  0\n'
-                    '2    1\n'
-                    '3    2\n'
-                    '4    3\n'
-                    '5    4')
+                    '2.0  1\n'
+                    '3.0  2\n'
+                    '4.0  3\n'
+                    '5.0  4')
         self.assertEqual(result, expected)
 
     def test_to_string_ascii_error(self):
@@ -1663,7 +1664,7 @@ class TestSeriesFormatting(unittest.TestCase):
         from pandas import date_range
         from datetime import datetime, timedelta
 
-        Series(np.array([1100, 20], dtype='timedelta64[s]')).to_string()
+        Series(np.array([1100, 20], dtype='timedelta64[ns]')).to_string()
 
         s = Series(date_range('2012-1-1', periods=3, freq='D'))
 

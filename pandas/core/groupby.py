@@ -45,6 +45,16 @@ aggregated : DataFrame
 """
 
 
+_apply_whitelist = frozenset(['last', 'first',
+                              'mean', 'sum', 'min', 'max',
+                              'head', 'tail',
+                              'cumsum', 'cumprod', 'cummin', 'cummax',
+                              'resample',
+                              'describe',
+                              'rank', 'quantile', 'count',
+                              'fillna', 'dtype'])
+
+
 class GroupByError(Exception):
     pass
 
@@ -241,13 +251,21 @@ class GroupBy(PandasObject):
         if hasattr(self.obj, attr) and attr != '_cache':
             return self._make_wrapper(attr)
 
-        raise AttributeError("'%s' object has no attribute '%s'" %
+        raise AttributeError("%r object has no attribute %r" %
                              (type(self).__name__, attr))
 
     def __getitem__(self, key):
         raise NotImplementedError
 
     def _make_wrapper(self, name):
+        if name not in _apply_whitelist:
+            is_callable = callable(getattr(self.obj, name, None))
+            kind = ' callable ' if is_callable else ' '
+            msg = ("Cannot access{0}attribute {1!r} of {2!r} objects, try "
+                   "using the 'apply' method".format(kind, name,
+                                                     type(self).__name__))
+            raise AttributeError(msg)
+
         f = getattr(self.obj, name)
         if not isinstance(f, types.MethodType):
             return self.apply(lambda self: getattr(self, name))
@@ -1432,7 +1450,7 @@ class SeriesGroupBy(GroupBy):
             ret = Series(result, index=index)
 
         if not self.as_index:  # pragma: no cover
-            print ('Warning, ignoring as_index=True')
+            print('Warning, ignoring as_index=True')
 
         return ret
 
@@ -1988,7 +2006,7 @@ class NDFrameGroupBy(GroupBy):
 
             # broadcasting
             if isinstance(res, Series):
-                if res.index is obj.index:
+                if res.index.is_(obj.index):
                     group.T.values[:] = res
                 else:
                     group.values[:] = res
@@ -2686,30 +2704,3 @@ def numpy_groupby(data, labels, axis=0):
     group_sums = np.add.reduceat(ordered_data, groups_at, axis=axis)
 
     return group_sums
-
-#-----------------------------------------------------------------------
-# Helper functions
-
-
-from pandas import compat
-import sys
-
-
-def install_ipython_completers():  # pragma: no cover
-    """Register the DataFrame type with IPython's tab completion machinery, so
-    that it knows about accessing column names as attributes."""
-    from IPython.utils.generics import complete_object
-
-    @complete_object.when_type(DataFrameGroupBy)
-    def complete_dataframe(obj, prev_completions):
-        return prev_completions + [c for c in obj.obj.columns
-                                   if isinstance(c, compat.string_types) and compat.isidentifier(c)]
-
-
-# Importing IPython brings in about 200 modules, so we want to avoid it unless
-# we're in IPython (when those modules are loaded anyway).
-if "IPython" in sys.modules:  # pragma: no cover
-    try:
-        install_ipython_completers()
-    except Exception:
-        pass

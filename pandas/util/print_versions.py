@@ -1,20 +1,29 @@
 import os
 import sys
 
+
 def show_versions():
     print("\nINSTALLED VERSIONS")
     print("------------------")
     print("Python: %d.%d.%d.%s.%s" % sys.version_info[:])
+
     try:
-        (sysname, nodename, release, version, machine) = os.uname()
-        print("OS: %s %s %s %s" % (sysname, release, version,machine))
+        sysname, nodename, release, version, machine = os.uname()
+        print("OS: %s %s %s %s" % (sysname, release, version, machine))
         print("byteorder: %s" % sys.byteorder)
-        print("LC_ALL: %s" % os.environ.get('LC_ALL',"None"))
-        print("LANG: %s" % os.environ.get('LANG',"None"))
+        print("LC_ALL: %s" % os.environ.get('LC_ALL', "None"))
+        print("LANG: %s" % os.environ.get('LANG', "None"))
     except:
         pass
 
     print("")
+
+    try:
+        import pandas
+        print("pandas: %s" % pandas.__version__)
+    except:
+        print("pandas: Not installed")
+
     try:
         import Cython
         print("Cython: %s" % Cython.__version__)
@@ -105,6 +114,12 @@ def show_versions():
         print("xlwt: Not installed")
 
     try:
+        import xlsxwriter
+        print("xlsxwriter: %s" % xlsxwriter.__version__)
+    except:
+        print("xlsxwriter: Not installed")
+
+    try:
         import sqlalchemy
         print("sqlalchemy: %s" % sqlalchemy.__version__)
     except:
@@ -129,7 +144,7 @@ def show_versions():
     except:
         print("html5lib: Not installed")
 
-    print("\n")
+
 
 if __name__ == "__main__":
     show_versions()

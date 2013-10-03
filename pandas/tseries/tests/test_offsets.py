@@ -13,8 +13,7 @@ from pandas.core.datetools import (
     DateOffset, Week, YearBegin, YearEnd, Hour, Minute, Second, Day, Micro,
     Milli, Nano,
     WeekOfMonth, format, ole2datetime, QuarterEnd, to_datetime, normalize_date,
-    get_offset, get_offset_name, inferTimeRule, hasOffsetName,
-    get_standard_freq)
+    get_offset, get_offset_name, hasOffsetName, get_standard_freq)
 
 from pandas.tseries.frequencies import _offset_map
 from pandas.tseries.index import _to_m8, DatetimeIndex, _daterange_cache
@@ -26,6 +25,8 @@ from pandas.lib import Timestamp
 from pandas.util.testing import assertRaisesRegexp
 import pandas.util.testing as tm
 from pandas.tseries.offsets import BusinessMonthEnd, CacheableOffset
+
+from pandas import _np_version_under1p7
 
 _multiprocess_can_split_ = True
 
@@ -150,10 +151,10 @@ class TestBusinessDay(unittest.TestCase):
         self.assertEqual(offset, offset2)
 
     def test_repr(self):
-        assert repr(self.offset) == '<1 BusinessDay>'
-        assert repr(self.offset2) == '<2 BusinessDays>'
+        self.assertEqual(repr(self.offset), '<BusinessDay>')
+        assert repr(self.offset2) == '<2 * BusinessDays>'
 
-        expected = '<1 BusinessDay: offset=datetime.timedelta(1)>'
+        expected = '<BusinessDay: offset=datetime.timedelta(1)>'
         assert repr(self.offset + timedelta(1)) == expected
 
     def test_with_offset(self):
@@ -324,10 +325,10 @@ class TestCustomBusinessDay(unittest.TestCase):
         self.assertEqual(offset, offset2)
 
     def test_repr(self):
-        assert repr(self.offset) == '<1 CustomBusinessDay>'
-        assert repr(self.offset2) == '<2 CustomBusinessDays>'
+        assert repr(self.offset) == '<CustomBusinessDay>'
+        assert repr(self.offset2) == '<2 * CustomBusinessDays>'
 
-        expected = '<1 BusinessDay: offset=datetime.timedelta(1)>'
+        expected = '<BusinessDay: offset=datetime.timedelta(1)>'
         assert repr(self.offset + timedelta(1)) == expected
 
     def test_with_offset(self):
@@ -526,6 +527,11 @@ def assertOnOffset(offset, date, expected):
 
 
 class TestWeek(unittest.TestCase):
+    def test_repr(self):
+        self.assertEqual(repr(Week(weekday=0)), "<Week: weekday=0>")
+        self.assertEqual(repr(Week(n=-1, weekday=0)), "<-1 * Week: weekday=0>")
+        self.assertEqual(repr(Week(n=-2, weekday=0)), "<-2 * Weeks: weekday=0>")
+
     def test_corner(self):
         self.assertRaises(ValueError, Week, weekday=7)
         assertRaisesRegexp(ValueError, "Day must be", Week, weekday=-1)
@@ -597,6 +603,9 @@ class TestWeekOfMonth(unittest.TestCase):
         assertRaisesRegexp(ValueError, "^Week", WeekOfMonth, n=1, week=-1, weekday=0)
         assertRaisesRegexp(ValueError, "^Day", WeekOfMonth, n=1, week=0, weekday=-1)
         assertRaisesRegexp(ValueError, "^Day", WeekOfMonth, n=1, week=0, weekday=7)
+
+    def test_repr(self):
+        self.assertEqual(repr(WeekOfMonth(weekday=1,week=2)), "<WeekOfMonth: week=2, weekday=1>")
 
     def test_offset(self):
         date1 = datetime(2011, 1, 4)  # 1st Tuesday of Month
@@ -896,6 +905,11 @@ class TestMonthEnd(unittest.TestCase):
 
 class TestBQuarterBegin(unittest.TestCase):
 
+    def test_repr(self):
+        self.assertEqual(repr(BQuarterBegin()),"<BusinessQuarterBegin: startingMonth=3>")
+        self.assertEqual(repr(BQuarterBegin(startingMonth=3)), "<BusinessQuarterBegin: startingMonth=3>")
+        self.assertEqual(repr(BQuarterBegin(startingMonth=1)), "<BusinessQuarterBegin: startingMonth=1>")
+
     def test_isAnchored(self):
         self.assert_(BQuarterBegin(startingMonth=1).isAnchored())
         self.assert_(BQuarterBegin().isAnchored())
@@ -980,6 +994,11 @@ class TestBQuarterBegin(unittest.TestCase):
 
 
 class TestBQuarterEnd(unittest.TestCase):
+
+    def test_repr(self):
+        self.assertEqual(repr(BQuarterEnd()),"<BusinessQuarterEnd: startingMonth=3>")
+        self.assertEqual(repr(BQuarterEnd(startingMonth=3)), "<BusinessQuarterEnd: startingMonth=3>")
+        self.assertEqual(repr(BQuarterEnd(startingMonth=1)), "<BusinessQuarterEnd: startingMonth=1>")
 
     def test_isAnchored(self):
         self.assert_(BQuarterEnd(startingMonth=1).isAnchored())
@@ -1083,6 +1102,11 @@ class TestBQuarterEnd(unittest.TestCase):
 
 
 class TestQuarterBegin(unittest.TestCase):
+    def test_repr(self):
+        self.assertEqual(repr(QuarterBegin()), "<QuarterBegin: startingMonth=3>")
+        self.assertEqual(repr(QuarterBegin(startingMonth=3)), "<QuarterBegin: startingMonth=3>")
+        self.assertEqual(repr(QuarterBegin(startingMonth=1)),"<QuarterBegin: startingMonth=1>")
+
     def test_isAnchored(self):
         self.assert_(QuarterBegin(startingMonth=1).isAnchored())
         self.assert_(QuarterBegin().isAnchored())
@@ -1152,6 +1176,10 @@ class TestQuarterBegin(unittest.TestCase):
 
 
 class TestQuarterEnd(unittest.TestCase):
+    def test_repr(self):
+        self.assertEqual(repr(QuarterEnd()), "<QuarterEnd: startingMonth=3>")
+        self.assertEqual(repr(QuarterEnd(startingMonth=3)), "<QuarterEnd: startingMonth=3>")
+        self.assertEqual(repr(QuarterEnd(startingMonth=1)), "<QuarterEnd: startingMonth=1>")
 
     def test_isAnchored(self):
         self.assert_(QuarterEnd(startingMonth=1).isAnchored())
@@ -1593,8 +1621,10 @@ class TestYearEndDiffMonth(unittest.TestCase):
 
 def assertEq(offset, base, expected):
     actual = offset + base
+    actual_swapped = base + offset
     try:
         assert actual == expected
+        assert actual_swapped == expected
     except AssertionError:
         raise AssertionError("\nExpected: %s\nActual: %s\nFor Offset: %s)"
                              "\nAt Date: %s" %
@@ -1639,6 +1669,59 @@ def test_Second():
     assert (Second(3) - Second(2)) == Second()
 
     assert not Second().isAnchored()
+
+
+def test_Millisecond():
+    assertEq(Milli(), datetime(2010, 1, 1), datetime(2010, 1, 1, 0, 0, 0, 1000))
+    assertEq(Milli(-1), datetime(2010, 1, 1, 0, 0, 0, 1000), datetime(2010, 1, 1))
+    assertEq(Milli(2), datetime(2010, 1, 1), datetime(2010, 1, 1, 0, 0, 0, 2000))
+    assertEq(2 * Milli(), datetime(2010, 1, 1), datetime(2010, 1, 1, 0, 0, 0, 2000))
+    assertEq(-1 * Milli(), datetime(2010, 1, 1, 0, 0, 0, 1000), datetime(2010, 1, 1))
+
+    assert (Milli(3) + Milli(2)) == Milli(5)
+    assert (Milli(3) - Milli(2)) == Milli()
+
+
+def test_MillisecondTimestampArithmetic():
+    assertEq(Milli(), Timestamp('2010-01-01'), Timestamp('2010-01-01 00:00:00.001'))
+    assertEq(Milli(-1), Timestamp('2010-01-01 00:00:00.001'), Timestamp('2010-01-01'))
+
+
+def test_Microsecond():
+    assertEq(Micro(), datetime(2010, 1, 1), datetime(2010, 1, 1, 0, 0, 0, 1))
+    assertEq(Micro(-1), datetime(2010, 1, 1, 0, 0, 0, 1), datetime(2010, 1, 1))
+    assertEq(2 * Micro(), datetime(2010, 1, 1), datetime(2010, 1, 1, 0, 0, 0, 2))
+    assertEq(-1 * Micro(), datetime(2010, 1, 1, 0, 0, 0, 1), datetime(2010, 1, 1))
+
+    assert (Micro(3) + Micro(2)) == Micro(5)
+    assert (Micro(3) - Micro(2)) == Micro()
+
+
+def test_NanosecondGeneric():
+    if _np_version_under1p7:
+        raise nose.SkipTest('numpy >= 1.7 required')
+    timestamp = Timestamp(datetime(2010, 1, 1))
+    assert timestamp.nanosecond == 0
+
+    result = timestamp + Nano(10)
+    assert result.nanosecond == 10
+
+    reverse_result = Nano(10) + timestamp
+    assert reverse_result.nanosecond == 10
+
+
+def test_Nanosecond():
+    if _np_version_under1p7:
+        raise nose.SkipTest('numpy >= 1.7 required')
+
+    timestamp = Timestamp(datetime(2010, 1, 1))
+    assertEq(Nano(), timestamp, timestamp + np.timedelta64(1, 'ns'))
+    assertEq(Nano(-1), timestamp + np.timedelta64(1, 'ns'), timestamp)
+    assertEq(2 * Nano(), timestamp, timestamp + np.timedelta64(2, 'ns'))
+    assertEq(-1 * Nano(), timestamp + np.timedelta64(1, 'ns'), timestamp)
+
+    assert (Nano(3) + Nano(2)) == Nano(5)
+    assert (Nano(3) - Nano(2)) == Nano()
 
 
 def test_tick_offset():
@@ -1733,8 +1816,6 @@ class TestOffsetAliases(unittest.TestCase):
         pass
 
     def test_alias_equality(self):
-        from pandas.tseries.frequencies import _offset_map
-
         for k, v in compat.iteritems(_offset_map):
             if v is None:
                 continue
@@ -1790,7 +1871,8 @@ def test_freq_offsets():
 
     off = BDay(1, offset=timedelta(0, -1800))
     assert(off.freqstr == 'B-30Min')
-    
+
+
 def get_all_subclasses(cls):
     ret = set()
     this_subclasses = cls.__subclasses__()
@@ -1799,40 +1881,41 @@ def get_all_subclasses(cls):
         ret | get_all_subclasses(this_subclass)
     return ret
 
-class TestCaching(unittest.TestCase):    
+
+class TestCaching(unittest.TestCase):
     def test_should_cache_month_end(self):
         self.assertTrue(MonthEnd()._should_cache())
-        
+
     def test_should_cache_bmonth_end(self):
         self.assertTrue(BusinessMonthEnd()._should_cache())
-        
+
     def test_should_cache_week_month(self):
         self.assertTrue(WeekOfMonth(weekday=1, week=2)._should_cache())
-        
+
     def test_all_cacheableoffsets(self):
         for subclass in get_all_subclasses(CacheableOffset):
             if subclass in [WeekOfMonth]:
                 continue
             self.run_X_index_creation(subclass)
-            
+
     def setUp(self):
         _daterange_cache.clear()
-        
+
     def run_X_index_creation(self, cls):
         inst1 = cls()
         if not inst1.isAnchored():
             self.assertFalse(inst1._should_cache(), cls)
             return
-        
+
         self.assertTrue(inst1._should_cache(), cls)
-            
+
         DatetimeIndex(start=datetime(2013,1,31), end=datetime(2013,3,31), freq=inst1, normalize=True)
         self.assertTrue(cls() in _daterange_cache, cls)
-                
+
     def test_month_end_index_creation(self):
         DatetimeIndex(start=datetime(2013,1,31), end=datetime(2013,3,31), freq=MonthEnd(), normalize=True)
         self.assertTrue(MonthEnd() in _daterange_cache)
-        
+
     def test_bmonth_end_index_creation(self):
         DatetimeIndex(start=datetime(2013,1,31), end=datetime(2013,3,29), freq=BusinessMonthEnd(), normalize=True)
         self.assertTrue(BusinessMonthEnd() in _daterange_cache)
@@ -1842,9 +1925,8 @@ class TestCaching(unittest.TestCase):
         DatetimeIndex(start=datetime(2013,1,31), end=datetime(2013,3,29), freq=inst1, normalize=True)
         inst2 = WeekOfMonth(weekday=1, week=2)
         self.assertTrue(inst2 in _daterange_cache)
-        
-         
+
+
 if __name__ == '__main__':
-    import nose
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],
                    exit=False)

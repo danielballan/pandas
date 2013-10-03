@@ -16,11 +16,22 @@ from pandas.core.internals import BlockManager
 import pandas.core.common as com
 import pandas.core.datetools as datetools
 from pandas import compat, _np_version_under1p7
-from pandas.compat import map, zip, lrange
+from pandas.compat import map, zip, lrange, string_types, isidentifier
 from pandas.core.common import (isnull, notnull, is_list_like,
                                 _values_from_object,
                                 _infer_dtype_from_scalar, _maybe_promote,
                                 ABCSeries)
+import pandas.core.nanops as nanops
+from pandas.util.decorators import Appender, Substitution
+
+# goal is to be able to define the docs close to function, while still being
+# able to share
+_shared_docs = dict()
+_shared_doc_kwargs = dict(axes='keywords for axes',
+                          klass='NDFrame',
+                          axes_single_arg='int or labels for object',
+                          args_transpose='axes to permute (int or label for'
+                                         ' object)')
 
 def is_dictlike(x):
     return isinstance(x, (dict, com.ABCSeries))
@@ -106,6 +117,11 @@ class NDFrame(PandasObject):
         # (since, by definition, `PandasContainers` are iterable)
         prepr = '[%s]' % ','.join(map(com.pprint_thing, self))
         return '%s(%s)' % (self.__class__.__name__, prepr)
+
+    def _local_dir(self):
+        """ add the string-like attributes from the info_axis """
+        return [c for c in self._info_axis
+                if isinstance(c, string_types) and isidentifier(c) ]
 
     @property
     def _constructor_sliced(self):
@@ -250,7 +266,7 @@ class NDFrame(PandasObject):
 
     def _get_axis_name(self, axis):
         axis = self._AXIS_ALIASES.get(axis, axis)
-        if isinstance(axis, compat.string_types):
+        if isinstance(axis, string_types):
             if axis in self._AXIS_NUMBERS:
                 return axis
         else:
@@ -271,6 +287,42 @@ class NDFrame(PandasObject):
             m = self._AXIS_LEN - 1
             return m - axis
         return axis
+
+    def _get_axis_resolvers(self, axis):
+        # index or columns
+        axis_index = getattr(self, axis)
+        d = dict()
+        prefix = axis[0]
+
+        for i, name in enumerate(axis_index.names):
+            if name is not None:
+                key = level = name
+            else:
+                # prefix with 'i' or 'c' depending on the input axis
+                # e.g., you must do ilevel_0 for the 0th level of an unnamed
+                # multiiindex
+                key = '{prefix}level_{i}'.format(prefix=prefix, i=i)
+                level = i
+
+            level_values = axis_index.get_level_values(level)
+            s = level_values.to_series()
+            s.index = axis_index
+            d[key] = s
+
+        # put the index/columns itself in the dict
+        if isinstance(axis_index, MultiIndex):
+            dindex = axis_index
+        else:
+            dindex = axis_index.to_series()
+
+        d[axis] = dindex
+        return d
+
+    def _get_resolvers(self):
+        d = {}
+        for axis_name in self._AXIS_ORDERS:
+            d.update(self._get_axis_resolvers(axis_name))
+        return d
 
     @property
     def _info_axis(self):
@@ -310,13 +362,12 @@ class NDFrame(PandasObject):
         self._data.set_axis(axis, labels)
         self._clear_item_cache()
 
-    def transpose(self, *args, **kwargs):
-        """
-        Permute the dimensions of the Object
+    _shared_docs['transpose'] = """
+        Permute the dimensions of the %(klass)s
 
         Parameters
         ----------
-        axes : int or name (or alias)
+        args : %(args_transpose)s
         copy : boolean, default False
             Make a copy of the underlying data. Mixed-dtype data will
             always result in a copy
@@ -330,6 +381,8 @@ class NDFrame(PandasObject):
         -------
         y : same as input
         """
+    @Appender(_shared_docs['transpose'] % _shared_doc_kwargs)
+    def transpose(self, *args, **kwargs):
 
         # construct the args
         axes, kwargs = self._construct_axes_from_arguments(
@@ -413,31 +466,31 @@ class NDFrame(PandasObject):
     #----------------------------------------------------------------------
     # Rename
 
-    def rename(self, *args, **kwargs):
-        """
-        Alter axes input function or
-        functions. Function / dict values must be unique (1-to-1). Labels not
-        contained in a dict / Series will be left as-is.
+    # TODO: define separate funcs for DataFrame, Series and Panel so you can
+    # get completion on keyword arguments.
+    _shared_docs['rename'] = """
+        Alter axes input function or functions. Function / dict values must be
+        unique (1-to-1). Labels not contained in a dict / Series will be left
+        as-is.
 
         Parameters
         ----------
-        axis keywords for this object
-          (e.g. index for Series,
-                index,columns for DataFrame,
-                items,major_axis,minor_axis for Panel)
-          : dict-like or function, optional
+        %(axes)s : dict-like or function, optional
             Transformation to apply to that axis values
 
         copy : boolean, default True
             Also copy underlying data
         inplace : boolean, default False
-            Whether to return a new PandasObject. If True then value of copy is
+            Whether to return a new %(klass)s. If True then value of copy is
             ignored.
 
         Returns
         -------
-        renamed : PandasObject (new object)
+        renamed : %(klass)s (new object)
         """
+    @Appender(_shared_docs['rename'] % dict(axes='axes keywords for this'
+                                            ' object', klass='NDFrame'))
+    def rename(self, *args, **kwargs):
 
         axes, kwargs = self._construct_axes_from_arguments(args, kwargs)
         copy = kwargs.get('copy', True)
@@ -480,6 +533,8 @@ class NDFrame(PandasObject):
         else:
             return result._propogate_attributes(self)
 
+    rename.__doc__ = _shared_docs['rename']
+
     def rename_axis(self, mapper, axis=0, copy=True, inplace=False):
         """
         Alter index and / or columns using input function or functions.
@@ -489,7 +544,7 @@ class NDFrame(PandasObject):
         Parameters
         ----------
         mapper : dict-like or function, optional
-        axis : int, default 0
+        axis : int or string, default 0
         copy : boolean, default True
             Also copy underlying data
         inplace : boolean, default False
@@ -530,16 +585,19 @@ class NDFrame(PandasObject):
         """
         return iter(self._info_axis)
 
+    # can we get a better explanation of this?
     def keys(self):
         """ return the info axis names """
         return self._info_axis
 
+    # what does info axis actually mean?
     def iteritems(self):
         for h in self._info_axis:
             yield h, self[h]
 
     # originally used to get around 2to3's changes to iteritems.
-    # Now unnecessary.
+    # Now unnecessary. Sidenote: don't want to deprecate this for a while,
+    # otherwise libraries that use 2to3 will have issues.
     def iterkv(self, *args, **kwargs):
         warnings.warn("iterkv is deprecated and will be removed in a future "
                       "release, use ``iteritems`` instead.", DeprecationWarning)
@@ -558,9 +616,24 @@ class NDFrame(PandasObject):
         return not all(len(self._get_axis(a)) > 0 for a in self._AXIS_ORDERS)
 
     def __nonzero__(self):
-        raise ValueError("The truth value of an array is ambiguous. Use a.empty, a.item(), a.any() or a.all().")
+        raise ValueError("The truth value of a {0} is ambiguous. "
+                         "Use a.empty, a.bool(), a.item(), a.any() or a.all().".format(self.__class__.__name__))
 
     __bool__ = __nonzero__
+
+    def bool(self):
+        """ Return the bool of a single element PandasObject
+            This must be a boolean scalar value, either True or False
+
+            Raise a ValueError if the PandasObject does not have exactly
+            1 element, or that element is not boolean """
+        v = self.squeeze()
+        if isinstance(v, (bool,np.bool_)):
+            return bool(v)
+        elif np.isscalar(v):
+            raise ValueError("bool cannot act on a non-boolean single element {0}".format(self.__class__.__name__))
+
+        self.__nonzero__()
 
     def __abs__(self):
         return self.abs()
@@ -732,6 +805,25 @@ class NDFrame(PandasObject):
         from pandas.io import pytables
         return pytables.to_hdf(path_or_buf, key, self, **kwargs)
 
+    def to_msgpack(self, path_or_buf, **kwargs):
+        """
+        msgpack (serialize) object to input file path
+
+        THIS IS AN EXPERIMENTAL LIBRARY and the storage format
+        may not be stable until a future release.
+
+        Parameters
+        ----------
+        path : string File path
+        args : an object or objects to serialize
+        append : boolean whether to append to an existing msgpack
+                (default is False)
+        compress : type of compressor (zlib or blosc), default to None (no compression)
+        """
+
+        from pandas.io import packers
+        return packers.to_msgpack(path_or_buf, self, **kwargs)
+
     def to_pickle(self, path):
         """
         Pickle (serialize) object to input file path
@@ -744,13 +836,13 @@ class NDFrame(PandasObject):
         from pandas.io.pickle import to_pickle
         return to_pickle(self, path)
 
-    def save(self, path):  # TODO remove in 0.13
+    def save(self, path):  # TODO remove in 0.14
         import warnings
         from pandas.io.pickle import to_pickle
         warnings.warn("save is deprecated, use to_pickle", FutureWarning)
         return to_pickle(self, path)
 
-    def load(self, path):  # TODO remove in 0.13
+    def load(self, path):  # TODO remove in 0.14
         import warnings
         from pandas.io.pickle import read_pickle
         warnings.warn("load is deprecated, use pd.read_pickle", FutureWarning)
@@ -764,8 +856,8 @@ class NDFrame(PandasObject):
         -----
         Requirements for your platform
           - Linux: xclip, or xsel (with gtk or PyQt4 modules)
-          - Windows:
-          - OS X:
+          - Windows: none
+          - OS X: none
         """
         from pandas.io import clipboard
         clipboard.to_clipboard(self)
@@ -825,14 +917,20 @@ class NDFrame(PandasObject):
         maybe it has changed """
         self._data.set(item, value)
 
-    def _maybe_update_cacher(self):
-        """ see if we need to update our parent cacher """
+    def _maybe_update_cacher(self, clear=False):
+        """ see if we need to update our parent cacher
+            if clear, then clear our cache """
         cacher = getattr(self,'_cacher',None)
         if cacher is not None:
             cacher[1]()._maybe_cache_changed(cacher[0],self)
+        if clear:
+            self._clear_item_cache()
 
-    def _clear_item_cache(self):
-        self._item_cache.clear()
+    def _clear_item_cache(self, i=None):
+        if i is not None:
+            self._item_cache.pop(i,None)
+        else:
+            self._item_cache.clear()
 
     def _set_item(self, key, value):
         self._data.set(key, value)
@@ -901,6 +999,7 @@ class NDFrame(PandasObject):
             new_data = self._data.take(indices, axis=baxis)
         return self._constructor(new_data)
 
+    # TODO: Check if this was clearer in 0.12
     def select(self, crit, axis=0):
         """
         Return data corresponding to axis labels matching criteria
@@ -1051,16 +1150,15 @@ class NDFrame(PandasObject):
 
         new_axis = labels.take(sort_index)
         return self.reindex(**{axis_name: new_axis})
-
-    def reindex(self, *args, **kwargs):
-        """Conform DataFrame to new index with optional filling logic, placing
+    _shared_docs['reindex'] = """
+        Conform %(klass)s to new index with optional filling logic, placing
         NA/NaN in locations having no value in the previous index. A new object
         is produced unless the new index is equivalent to the current one and
         copy=False
 
         Parameters
         ----------
-        axes : array-like, optional (can be specified in order, or as keywords)
+        %(axes)s : array-like, optional (can be specified in order, or as keywords)
             New labels / index to conform to. Preferably an Index object to
             avoid duplicating data
         method : {'backfill', 'bfill', 'pad', 'ffill', None}, default None
@@ -1086,8 +1184,12 @@ class NDFrame(PandasObject):
 
         Returns
         -------
-        reindexed : same type as calling instance
+        reindexed : %(klass)s
         """
+    # TODO: Decide if we care about having different examples for different
+    #       kinds
+    @Appender(_shared_docs['reindex'] % dict(axes="axes", klass="NDFrame"))
+    def reindex(self, *args, **kwargs):
 
         # construct the args
         axes, kwargs = self._construct_axes_from_arguments(args, kwargs)
@@ -1145,8 +1247,7 @@ class NDFrame(PandasObject):
     def _reindex_multi(self, axes, copy, fill_value):
         return NotImplemented
 
-    def reindex_axis(self, labels, axis=0, method=None, level=None, copy=True,
-                     limit=None, fill_value=np.nan):
+    _shared_docs['reindex_axis'] = (
         """Conform input object to new index with optional filling logic, placing
         NA/NaN in locations having no value in the previous index. A new object
         is produced unless the new index is equivalent to the current one and
@@ -1157,9 +1258,9 @@ class NDFrame(PandasObject):
         index : array-like, optional
             New labels / index to conform to. Preferably an Index object to
             avoid duplicating data
-        axis : allowed axis for the input
+        axis : %(axes_single_arg)s
         method : {'backfill', 'bfill', 'pad', 'ffill', None}, default None
-            Method to use for filling holes in reindexed DataFrame
+            Method to use for filling holes in reindexed object.
             pad / ffill: propagate last valid observation forward to next valid
             backfill / bfill: use NEXT valid observation to fill gap
         copy : boolean, default True
@@ -1176,12 +1277,15 @@ class NDFrame(PandasObject):
 
         See also
         --------
-        DataFrame.reindex, DataFrame.reindex_like
+        reindex, reindex_like
 
         Returns
         -------
-        reindexed : same type as calling instance
-        """
+        reindexed : %(klass)s
+        """)
+    @Appender(_shared_docs['reindex_axis'] % _shared_doc_kwargs)
+    def reindex_axis(self, labels, axis=0, method=None, level=None, copy=True,
+                     limit=None, fill_value=np.nan):
         self._consolidate_inplace()
 
         axis_name = self._get_axis_name(axis)
@@ -1267,7 +1371,7 @@ class NDFrame(PandasObject):
         if items is not None:
             return self.reindex(**{axis_name: [r for r in items if r in axis_values]})
         elif like:
-            matchf = lambda x: (like in x if isinstance(x, compat.string_types)
+            matchf = lambda x: (like in x if isinstance(x, string_types)
                                 else like in str(x))
             return self.select(matchf, axis=axis_name)
         elif regex:
@@ -1388,7 +1492,7 @@ class NDFrame(PandasObject):
         Returns
         -------
         values : ndarray
-            If the DataFrame is heterogeneous and contains booleans or objects,
+            If the caller is heterogeneous and contains booleans or objects,
             the result will be of dtype=object
         """
         self._consolidate_inplace()
@@ -1524,10 +1628,9 @@ class NDFrame(PandasObject):
             0: fill column-by-column
             1: fill row-by-row
         inplace : boolean, default False
-            If True, fill the DataFrame in place. Note: this will modify any
-            other views on this DataFrame, like if you took a no-copy slice of
-            an existing DataFrame, for example a column in a DataFrame. Returns
-            a reference to the filled object, which is self if inplace=True
+            If True, fill in place. Note: this will modify any
+            other views on this object, (e.g. a no-copy slice for a column in a
+            DataFrame).  Still returns the object.
         limit : int, default None
             Maximum size gap to forward or backward fill
         downcast : dict, default is None, a dict of item->dtype of what to
@@ -1540,7 +1643,7 @@ class NDFrame(PandasObject):
 
         Returns
         -------
-        filled : DataFrame
+        filled : same type as caller
         """
         if isinstance(value, (list, tuple)):
             raise TypeError('"value" parameter must be a scalar or dict, but '
@@ -1563,6 +1666,18 @@ class NDFrame(PandasObject):
 
                 return result
 
+            # > 3d
+            if self.ndim > 3:
+                raise NotImplementedError('cannot fillna with a method for > 3dims')
+
+            # 3d
+            elif self.ndim == 3:
+
+                # fill in 2d chunks
+                result = dict([ (col,s.fillna(method=method, value=value)) for col, s in compat.iteritems(self) ])
+                return self._constructor.from_dict(result)
+
+            # 2d or less
             method = com._clean_fill_method(method)
             new_data = self._data.interpolate(method=method,
                                               axis=axis,
@@ -1658,10 +1773,9 @@ class NDFrame(PandasObject):
             dict will not be filled). Regular expressions, strings and lists or
             dicts of such objects are also allowed.
         inplace : boolean, default False
-            If True, fill the DataFrame in place. Note: this will modify any
-            other views on this DataFrame, like if you took a no-copy slice of
-            an existing DataFrame, for example a column in a DataFrame. Returns
-            a reference to the filled object, which is self if inplace=True
+            If True, in place. Note: this will modify any
+            other views on this object (e.g. a column form a DataFrame).
+            Returns the caller if this is True.
         limit : int, default None
             Maximum size gap to forward or backward fill
         regex : bool or same types as `to_replace`, default False
@@ -1860,9 +1974,9 @@ class NDFrame(PandasObject):
         reindex, replace, fillna
         """
         from warnings import warn
-        warn('DataFrame.interpolate will be removed in v0.13, please use '
-             'either DataFrame.fillna or DataFrame.replace instead',
-             FutureWarning)
+        warn('{klass}.interpolate will be removed in v0.14, please use '
+             'either {klass}.fillna or {klass}.replace '
+             'instead'.format(klass=self.__class__), FutureWarning)
         if self._is_mixed_type and axis == 1:
             return self.T.replace(to_replace, method=method, limit=limit).T
 
@@ -1894,33 +2008,6 @@ class NDFrame(PandasObject):
 
     #----------------------------------------------------------------------
     # Action Methods
-
-    def abs(self):
-        """
-        Return an object with absolute value taken. Only applicable to objects
-        that are all numeric
-
-        Returns
-        -------
-        abs: type of caller
-        """
-        obj = np.abs(self)
-
-        # suprimo numpy 1.6 hacking
-        if _np_version_under1p7:
-            if self.ndim == 1:
-                if obj.dtype == 'm8[us]':
-                    obj = obj.astype('m8[ns]')
-            elif self.ndim == 2:
-                def f(x):
-                    if x.dtype == 'm8[us]':
-                        x = x.astype('m8[ns]')
-                    return x
-
-                if 'm8[us]' in obj.dtypes.values:
-                    obj = obj.apply(f)
-
-        return obj
 
     def clip(self, lower=None, upper=None, out=None):
         """
@@ -2352,8 +2439,8 @@ class NDFrame(PandasObject):
 
         Parameters
         ----------
-        cond : boolean DataFrame or array
-        other : scalar or DataFrame
+        cond : boolean NDFrame or array
+        other : scalar or NDFrame
         inplace : boolean, default False
             Whether to perform the operation in place on the data
         axis : alignment axis if needed, default None
@@ -2366,7 +2453,7 @@ class NDFrame(PandasObject):
 
         Returns
         -------
-        wh : DataFrame
+        wh : same type as caller
         """
         if isinstance(cond, NDFrame):
             cond = cond.reindex(**self._construct_axes_dict())
@@ -2401,7 +2488,7 @@ class NDFrame(PandasObject):
 
             # slice me out of the other
             else:
-                raise NotImplemented("cannot align with a bigger dimensional PandasObject")
+                raise NotImplemented("cannot align with a higher dimensional NDFrame")
 
         elif is_list_like(other):
 
@@ -2483,12 +2570,12 @@ class NDFrame(PandasObject):
 
     def mask(self, cond):
         """
-        Returns copy of self whose values are replaced with nan if the
+        Returns copy whose values are replaced with nan if the
         inverted condition is True
 
         Parameters
         ----------
-        cond: boolean object or array
+        cond : boolean NDFrame or array
 
         Returns
         -------
@@ -2496,183 +2583,10 @@ class NDFrame(PandasObject):
         """
         return self.where(~cond, np.nan)
 
-    def pct_change(self, periods=1, fill_method='pad', limit=None, freq=None,
-                   **kwds):
-        """
-        Percent change over given number of periods
-
-        Parameters
-        ----------
-        periods : int, default 1
-            Periods to shift for forming percent change
-        fill_method : str, default 'pad'
-            How to handle NAs before computing percent changes
-        limit : int, default None
-            The number of consecutive NAs to fill before stopping
-        freq : DateOffset, timedelta, or offset alias string, optional
-            Increment to use from time series API (e.g. 'M' or BDay())
-
-        Returns
-        -------
-        chg : Series or DataFrame
-        """
-        if fill_method is None:
-            data = self
-        else:
-            data = self.fillna(method=fill_method, limit=limit)
-        rs = data / data.shift(periods=periods, freq=freq, **kwds) - 1
-        if freq is None:
-            mask = com.isnull(_values_from_object(self))
-            np.putmask(rs.values, mask, np.nan)
-        return rs
-
-    def cumsum(self, axis=None, skipna=True):
-        """
-        Return DataFrame of cumulative sums over requested axis.
-
-        Parameters
-        ----------
-        axis : {0, 1}
-            0 for row-wise, 1 for column-wise
-        skipna : boolean, default True
-            Exclude NA/null values. If an entire row/column is NA, the result
-            will be NA
-
-        Returns
-        -------
-        y : DataFrame
-        """
-        if axis is None:
-            axis = self._stat_axis_number
-        else:
-            axis = self._get_axis_number(axis)
-
-        y = _values_from_object(self).copy()
-        if not issubclass(y.dtype.type, np.integer):
-            mask = np.isnan(_values_from_object(self))
-
-            if skipna:
-                np.putmask(y, mask, 0.)
-
-            result = y.cumsum(axis)
-
-            if skipna:
-                np.putmask(result, mask, np.nan)
-        else:
-            result = y.cumsum(axis)
-        return self._wrap_array(result, self.axes, copy=False)
-
-    def cumprod(self, axis=None, skipna=True):
-        """
-        Return cumulative product over requested axis as DataFrame
-
-        Parameters
-        ----------
-        axis : {0, 1}
-            0 for row-wise, 1 for column-wise
-        skipna : boolean, default True
-            Exclude NA/null values. If an entire row/column is NA, the result
-            will be NA
-
-        Returns
-        -------
-        y : DataFrame
-        """
-        if axis is None:
-            axis = self._stat_axis_number
-        else:
-            axis = self._get_axis_number(axis)
-
-        y = _values_from_object(self).copy()
-        if not issubclass(y.dtype.type, np.integer):
-            mask = np.isnan(_values_from_object(self))
-
-            if skipna:
-                np.putmask(y, mask, 1.)
-            result = y.cumprod(axis)
-
-            if skipna:
-                np.putmask(result, mask, np.nan)
-        else:
-            result = y.cumprod(axis)
-        return self._wrap_array(result, self.axes, copy=False)
-
-    def cummax(self, axis=None, skipna=True):
-        """
-        Return DataFrame of cumulative max over requested axis.
-
-        Parameters
-        ----------
-        axis : {0, 1}
-            0 for row-wise, 1 for column-wise
-        skipna : boolean, default True
-            Exclude NA/null values. If an entire row/column is NA, the result
-            will be NA
-
-        Returns
-        -------
-        y : DataFrame
-        """
-        if axis is None:
-            axis = self._stat_axis_number
-        else:
-            axis = self._get_axis_number(axis)
-
-        y = _values_from_object(self).copy()
-        if not issubclass(y.dtype.type, np.integer):
-            mask = np.isnan(_values_from_object(self))
-
-            if skipna:
-                np.putmask(y, mask, -np.inf)
-
-            result = np.maximum.accumulate(y, axis)
-
-            if skipna:
-                np.putmask(result, mask, np.nan)
-        else:
-            result = np.maximum.accumulate(y, axis)
-        return self._wrap_array(result, self.axes, copy=False)
-
-    def cummin(self, axis=None, skipna=True):
-        """
-        Return DataFrame of cumulative min over requested axis.
-
-        Parameters
-        ----------
-        axis : {0, 1}
-            0 for row-wise, 1 for column-wise
-        skipna : boolean, default True
-            Exclude NA/null values. If an entire row/column is NA, the result
-            will be NA
-
-        Returns
-        -------
-        y : DataFrame
-        """
-        if axis is None:
-            axis = self._stat_axis_number
-        else:
-            axis = self._get_axis_number(axis)
-
-        y = _values_from_object(self).copy()
-        if not issubclass(y.dtype.type, np.integer):
-            mask = np.isnan(_values_from_object(self))
-
-            if skipna:
-                np.putmask(y, mask, np.inf)
-
-            result = np.minimum.accumulate(y, axis)
-
-            if skipna:
-                np.putmask(result, mask, np.nan)
-        else:
-            result = np.minimum.accumulate(y, axis)
-        return self._wrap_array(result, self.axes, copy=False)
 
     def shift(self, periods=1, freq=None, axis=0, **kwds):
         """
-        Shift the index of the DataFrame by desired number of periods with an
-        optional time freq
+        Shift index by desired number of periods with an optional time freq
 
         Parameters
         ----------
@@ -2688,7 +2602,7 @@ class NDFrame(PandasObject):
 
         Returns
         -------
-        shifted : DataFrame
+        shifted : same type as caller
         """
         if periods == 0:
             return self
@@ -2744,7 +2658,7 @@ class NDFrame(PandasObject):
 
         offset = _resolve_offset(freq, kwds)
 
-        if isinstance(offset, compat.string_types):
+        if isinstance(offset, string_types):
             offset = datetools.to_offset(offset)
 
         block_axis = self._get_block_manager_axis(axis)
@@ -2764,15 +2678,15 @@ class NDFrame(PandasObject):
         return self._constructor(new_data)
 
     def truncate(self, before=None, after=None, copy=True):
-        """Function truncate a sorted DataFrame / Series before and/or after
-        some particular dates.
+        """Truncates a sorted NDFrame before and/or after some particular
+        dates.
 
         Parameters
         ----------
         before : date
-        Truncate before date
+            Truncate before date
         after : date
-        Truncate after date
+            Truncate after date
 
         Returns
         -------
@@ -2838,7 +2752,7 @@ class NDFrame(PandasObject):
 
         return new_obj
 
-    def tz_localize(self, tz, axis=0, copy=True):
+    def tz_localize(self, tz, axis=0, copy=True, infer_dst=False):
         """
         Localize tz-naive TimeSeries to target time zone
 
@@ -2847,6 +2761,8 @@ class NDFrame(PandasObject):
         tz : string or pytz.timezone object
         copy : boolean, default True
             Also make a copy of the underlying data
+        infer_dst : boolean, default False
+            Attempt to infer fall dst-transition times based on order
 
         Returns
         -------
@@ -2864,7 +2780,7 @@ class NDFrame(PandasObject):
             new_data = new_data.copy()
 
         new_obj = self._constructor(new_data)
-        new_ax = ax.tz_localize(tz)
+        new_ax = ax.tz_localize(tz, infer_dst=infer_dst)
 
         if axis == 0:
             new_obj._set_axis(1, new_ax)
@@ -2873,6 +2789,241 @@ class NDFrame(PandasObject):
             self._clear_item_cache()
 
         return new_obj
+
+    #----------------------------------------------------------------------
+    # Numeric Methods
+    def abs(self):
+        """
+        Return an object with absolute value taken. Only applicable to objects
+        that are all numeric
+
+        Returns
+        -------
+        abs: type of caller
+        """
+        obj = np.abs(self)
+
+        # suprimo numpy 1.6 hacking
+        if _np_version_under1p7:
+            if self.ndim == 1:
+                if obj.dtype == 'm8[us]':
+                    obj = obj.astype('m8[ns]')
+            elif self.ndim == 2:
+                def f(x):
+                    if x.dtype == 'm8[us]':
+                        x = x.astype('m8[ns]')
+                    return x
+
+                if 'm8[us]' in obj.dtypes.values:
+                    obj = obj.apply(f)
+
+        return obj
+
+    def pct_change(self, periods=1, fill_method='pad', limit=None, freq=None,
+                   **kwds):
+        """
+        Percent change over given number of periods
+
+        Parameters
+        ----------
+        periods : int, default 1
+            Periods to shift for forming percent change
+        fill_method : str, default 'pad'
+            How to handle NAs before computing percent changes
+        limit : int, default None
+            The number of consecutive NAs to fill before stopping
+        freq : DateOffset, timedelta, or offset alias string, optional
+            Increment to use from time series API (e.g. 'M' or BDay())
+
+        Returns
+        -------
+        chg : same type as caller
+        """
+        # TODO: Not sure if above is correct - need someone to confirm.
+        if fill_method is None:
+            data = self
+        else:
+            data = self.fillna(method=fill_method, limit=limit)
+        rs = data / data.shift(periods=periods, freq=freq, **kwds) - 1
+        if freq is None:
+            mask = com.isnull(_values_from_object(self))
+            np.putmask(rs.values, mask, np.nan)
+        return rs
+
+    def _agg_by_level(self, name, axis=0, level=0, skipna=True, **kwds):
+        grouped = self.groupby(level=level, axis=axis)
+        if hasattr(grouped, name) and skipna:
+            return getattr(grouped, name)(**kwds)
+        axis = self._get_axis_number(axis)
+        method = getattr(type(self), name)
+        applyf = lambda x: method(x, axis=axis, skipna=skipna, **kwds)
+        return grouped.aggregate(applyf)
+
+    @classmethod
+    def _add_numeric_operations(cls):
+        """ add the operations to the cls; evaluate the doc strings again """
+
+        axis_descr = "{" + ', '.join([ "{0} ({1})".format(a,i) for i, a in enumerate(cls._AXIS_ORDERS)]) + "}"
+        name = cls._constructor_sliced.__name__ if cls._AXIS_LEN > 1 else 'scalar'
+        _num_doc = """
+
+%(desc)s
+
+Parameters
+----------
+axis : """ + axis_descr + """
+skipna : boolean, default True
+    Exclude NA/null values. If an entire row/column is NA, the result
+    will be NA
+level : int, default None
+        If the axis is a MultiIndex (hierarchical), count along a
+        particular level, collapsing into a """ + name + """
+numeric_only : boolean, default None
+    Include only float, int, boolean data. If None, will attempt to use
+    everything, then use only numeric data
+
+Returns
+-------
+%(outname)s : """ + name + " or " + cls.__name__ + " (if level specified)\n"
+
+        _cnum_doc = """
+
+Parameters
+----------
+axis : """ + axis_descr + """
+skipna : boolean, default True
+    Exclude NA/null values. If an entire row/column is NA, the result
+    will be NA
+
+Returns
+-------
+%(outname)s : """ + name + "\n"
+
+        def _make_stat_function(name, desc, f):
+
+            @Substitution(outname=name, desc=desc)
+            @Appender(_num_doc)
+            def stat_func(self, axis=None, skipna=None, level=None, numeric_only=None,
+                    **kwargs):
+                if skipna is None:
+                    skipna = True
+                if axis is None:
+                    axis = self._stat_axis_number
+                if level is not None:
+                    return self._agg_by_level(name, axis=axis, level=level,
+                                              skipna=skipna)
+                return self._reduce(f, axis=axis,
+                                    skipna=skipna, numeric_only=numeric_only)
+            stat_func.__name__ = name
+            return stat_func
+
+        cls.sum = _make_stat_function('sum',"Return the sum of the values for the requested axis", nanops.nansum)
+        cls.mean = _make_stat_function('mean',"Return the mean of the values for the requested axis", nanops.nanmean)
+        cls.skew = _make_stat_function('skew',"Return unbiased skew over requested axis\nNormalized by N-1", nanops.nanskew)
+        cls.kurt = _make_stat_function('kurt',"Return unbiased kurtosis over requested axis\nNormalized by N-1", nanops.nankurt)
+        cls.kurtosis = cls.kurt
+        cls.prod = _make_stat_function('prod',"Return the product of the values for the requested axis", nanops.nanprod)
+        cls.product = cls.prod
+        cls.median = _make_stat_function('median',"Return the median of the values for the requested axis", nanops.nanmedian)
+        cls.max = _make_stat_function('max',"""
+This method returns the maximum of the values in the object. If you
+want the *index* of the maximum, use ``idxmax``. This is the
+equivalent of the ``numpy.ndarray`` method ``argmax``.""", nanops.nanmax)
+        cls.min = _make_stat_function('min',"""
+This method returns the minimum of the values in the object. If you
+want the *index* of the minimum, use ``idxmin``. This is the
+equivalent of the ``numpy.ndarray`` method ``argmin``.""", nanops.nanmin)
+
+        @Substitution(outname='mad', desc="Return the mean absolute deviation of the values for the requested axis")
+        @Appender(_num_doc)
+        def mad(self,  axis=None, skipna=None, level=None, **kwargs):
+            if skipna is None:
+                skipna = True
+            if axis is None:
+                axis = self._stat_axis_number
+            if level is not None:
+                return self._agg_by_level('mad', axis=axis, level=level,
+                                          skipna=skipna)
+
+            data = self._get_numeric_data()
+            if axis == 0:
+                demeaned = data - data.mean(axis=0)
+            else:
+                demeaned = data.sub(data.mean(axis=1), axis=0)
+            return np.abs(demeaned).mean(axis=axis, skipna=skipna)
+        cls.mad = mad
+
+        @Substitution(outname='variance',desc="Return unbiased variance over requested axis\nNormalized by N-1")
+        @Appender(_num_doc)
+        def var(self, axis=None, skipna=None, level=None, ddof=1, **kwargs):
+            if skipna is None:
+                skipna = True
+            if axis is None:
+                axis = self._stat_axis_number
+            if level is not None:
+                return self._agg_by_level('var', axis=axis, level=level,
+                                          skipna=skipna, ddof=ddof)
+
+            return self._reduce(nanops.nanvar, axis=axis, skipna=skipna, ddof=ddof)
+        cls.var = var
+
+        @Substitution(outname='stdev',desc="Return unbiased standard deviation over requested axis\nNormalized by N-1")
+        @Appender(_num_doc)
+        def std(self, axis=None, skipna=None, level=None, ddof=1, **kwargs):
+            if skipna is None:
+                skipna = True
+            if axis is None:
+                axis = self._stat_axis_number
+            if level is not None:
+                return self._agg_by_level('std', axis=axis, level=level,
+                                          skipna=skipna, ddof=ddof)
+            result = self.var(axis=axis, skipna=skipna, ddof=ddof)
+            if getattr(result,'ndim',0) > 0:
+                return result.apply(np.sqrt)
+            return np.sqrt(result)
+        cls.std = std
+
+        @Substitution(outname='compounded',desc="Return the compound percentage of the values for the requested axis")
+        @Appender(_num_doc)
+        def compound(self, axis=None, skipna=None, level=None, **kwargs):
+            if skipna is None:
+                skipna = True
+            return (1 + self).prod(axis=axis, skipna=skipna, level=level) - 1
+        cls.compound = compound
+
+        def _make_cum_function(name, accum_func, mask_a, mask_b):
+
+            @Substitution(outname=name)
+            @Appender("Return cumulative {0} over requested axis.".format(name) + _cnum_doc)
+            def func(self, axis=None, dtype=None, out=None, skipna=True, **kwargs):
+                if axis is None:
+                    axis = self._stat_axis_number
+                else:
+                    axis = self._get_axis_number(axis)
+
+                y = _values_from_object(self).copy()
+                if not issubclass(y.dtype.type, (np.integer,np.bool_)):
+                    mask = isnull(self)
+                    if skipna:
+                        np.putmask(y, mask, mask_a)
+                    result = accum_func(y, axis)
+                    if skipna:
+                        np.putmask(result, mask, mask_b)
+                else:
+                    result = accum_func(y, axis)
+
+                d = self._construct_axes_dict()
+                d['copy'] = False
+                return self._constructor(result, **d)._propogate_attributes(self)
+
+            func.__name__ = name
+            return func
+
+
+        cls.cummin  = _make_cum_function('min', lambda y, axis: np.minimum.accumulate(y, axis), np.inf, np.nan)
+        cls.cumsum  = _make_cum_function('sum',  lambda y, axis: y.cumsum(axis), 0., np.nan)
+        cls.cumprod = _make_cum_function('prod', lambda y, axis: y.cumprod(axis), 1., np.nan)
+        cls.cummax  = _make_cum_function('max',  lambda y, axis: np.maximum.accumulate(y, axis), -np.inf, np.nan)
 
 # install the indexerse
 for _name, _indexer in indexing.get_indexers_list():

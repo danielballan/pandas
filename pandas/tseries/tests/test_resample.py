@@ -11,6 +11,8 @@ from pandas.tseries.index import date_range
 from pandas.tseries.offsets import Minute, BDay
 from pandas.tseries.period import period_range, PeriodIndex, Period
 from pandas.tseries.resample import DatetimeIndex, TimeGrouper
+from pandas.tseries.frequencies import MONTHS, DAYS
+
 import pandas.tseries.offsets as offsets
 import pandas as pd
 
@@ -28,7 +30,7 @@ def _skip_if_no_pytz():
     try:
         import pytz
     except ImportError:
-        raise nose.SkipTest
+        raise nose.SkipTest("pytz not installed")
 
 
 class TestResample(unittest.TestCase):
@@ -438,6 +440,26 @@ class TestResample(unittest.TestCase):
             expected = ts.resample(freq, closed='left', label='left')
             assert_series_equal(result, expected)
 
+    def test_resample_single_group(self):
+        mysum = lambda x: x.sum()
+
+        rng = date_range('2000-1-1', '2000-2-10', freq='D')
+        ts = Series(np.random.randn(len(rng)), index=rng)
+        assert_series_equal(ts.resample('M', how='sum'),
+                            ts.resample('M', how=mysum))
+
+        rng = date_range('2000-1-1', '2000-1-10', freq='D')
+        ts = Series(np.random.randn(len(rng)), index=rng)
+        assert_series_equal(ts.resample('M', how='sum'),
+                            ts.resample('M', how=mysum))
+
+        # GH 3849
+        s = Series([30.1, 31.6], index=[Timestamp('20070915 15:30:00'),
+                                        Timestamp('20070915 15:40:00')])
+        expected = Series([0.75], index=[Timestamp('20070915')])
+        result = s.resample('D', how=lambda x: np.std(x))
+        assert_series_equal(result, expected)
+
     def test_resample_base(self):
         rng = date_range('1/1/2000 00:00:00', '1/1/2000 02:00', freq='s')
         ts = Series(np.random.randn(len(rng)), index=rng)
@@ -638,9 +660,6 @@ def _simple_ts(start, end, freq='D'):
 def _simple_pts(start, end, freq='D'):
     rng = period_range(start, end, freq=freq)
     return TimeSeries(np.random.randn(len(rng)), index=rng)
-
-
-from pandas.tseries.frequencies import MONTHS, DAYS
 
 
 class TestResamplePeriodIndex(unittest.TestCase):
@@ -1035,6 +1054,7 @@ class TestResamplePeriodIndex(unittest.TestCase):
         result = series.resample('D')
         self.assertEquals(result.index[0], dates[0])
 
+
 class TestTimeGrouper(unittest.TestCase):
 
     def setUp(self):
@@ -1108,6 +1128,21 @@ class TestTimeGrouper(unittest.TestCase):
             return x.mean(1)
         result = bingrouped.agg(f)
         tm.assert_panel_equal(result, binagg)
+
+    def test_fails_on_no_datetime_index(self):
+        index_names = ('Int64Index', 'PeriodIndex', 'Index', 'Float64Index',
+                       'MultiIndex')
+        index_funcs = (tm.makeIntIndex, tm.makePeriodIndex,
+                       tm.makeUnicodeIndex, tm.makeFloatIndex,
+                       lambda m: tm.makeCustomIndex(m, 2))
+        n = 2
+        for name, func in zip(index_names, index_funcs):
+            index = func(n)
+            df = DataFrame({'a': np.random.randn(n)}, index=index)
+            with tm.assertRaisesRegexp(TypeError,
+                                       "axis must be a DatetimeIndex, "
+                                       "but got an instance of %r" % name):
+                df.groupby(TimeGrouper('D'))
 
 
 if __name__ == '__main__':
